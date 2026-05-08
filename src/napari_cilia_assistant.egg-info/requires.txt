@@ -1,0 +1,7 @@
+napari
+numpy
+scipy
+opencv-python
+qtpy
+magicgui
+matplotlib

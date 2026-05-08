@@ -1,0 +1,13 @@
+name: napari-cilia-assistant
+display_name: Cilia Assistant
+visibility: public
+categories:
+  - Utilities
+contributions:
+  commands:
+    - id: napari-cilia-assistant.make_widget
+      python_name: napari_cilia_assistant._widget:CiliaAssistantWidget
+      title: Open Cilia Assistant
+  widgets:
+    - command: napari-cilia-assistant.make_widget
+      display_name: Cilia Assistant

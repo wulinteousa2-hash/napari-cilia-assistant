@@ -1,0 +1,2 @@
+[napari.manifest]
+napari-cilia-assistant = napari_cilia_assistant:napari.yaml

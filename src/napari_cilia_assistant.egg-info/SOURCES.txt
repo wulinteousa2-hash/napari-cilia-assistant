@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+src/napari_cilia_assistant/__init__.py
+src/napari_cilia_assistant/_analysis.py
+src/napari_cilia_assistant/_widget.py
+src/napari_cilia_assistant/napari.yaml
+src/napari_cilia_assistant.egg-info/PKG-INFO
+src/napari_cilia_assistant.egg-info/SOURCES.txt
+src/napari_cilia_assistant.egg-info/dependency_links.txt
+src/napari_cilia_assistant.egg-info/entry_points.txt
+src/napari_cilia_assistant.egg-info/requires.txt
+src/napari_cilia_assistant.egg-info/top_level.txt
+tests/test_basic.py

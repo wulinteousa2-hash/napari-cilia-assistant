@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napari-cilia-assistant"
+version = "0.1.0"
+description = "A napari plugin for measuring ciliary beat frequency from high-speed microscopy videos."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Wulin Teo", email = "wteo@houstonmethodist.org" }
+]
+dependencies = [
+    "napari",
+    "numpy",
+    "scipy",
+    "opencv-python",
+    "qtpy",
+    "magicgui",
+    "matplotlib"
+]
+
+[project.entry-points."napari.manifest"]
+napari-cilia-assistant = "napari_cilia_assistant:napari.yaml"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+napari_cilia_assistant = ["napari.yaml"]

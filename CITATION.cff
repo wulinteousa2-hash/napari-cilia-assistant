@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use napari-cilia-assistant in your work, please cite it using this metadata."
+type: software
+title: "napari-cilia-assistant"
+version: "0.1.0"
+date-released: "2026-05-07"
+
+authors:
+  - family-names: "Teo"
+    given-names: "Wulin"
+    orcid: "https://orcid.org/0000-0001-7815-7014"
+
+repository-code: "https://github.com/wulinteousa2-hash/napari-cilia-assistant"
+url: "https://github.com/wulinteousa2-hash/napari-cilia-assistant"
+license: "MIT"
+
+keywords:
+  - "napari"
+  - "cilia"
+  - "ciliary beat frequency"
+  - "cilia motion"
+  - "frequency analysis"
+  - "high-speed video microscopy"
+  - "FFT"
+  - "kymograph"
+  - "microscopy"
+  - "image analysis"
+
+abstract: "A napari plugin for measuring ciliary beat frequency and cilia-associated motion from high-speed AVI microscopy videos. The plugin supports video metadata extraction, time-stack loading, region-of-interest measurement, ROI mean-intensity analysis, FFT-based dominant frequency estimation, peak-interval frequency estimation, kymograph generation, and CSV export for downstream analysis."
