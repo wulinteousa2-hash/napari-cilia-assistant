@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from qtpy.QtCore import Qt
 from qtpy.QtGui import QImage, QPixmap
 from qtpy.QtWidgets import (
     QApplication,
@@ -26,6 +27,7 @@ from qtpy.QtWidgets import (
     QTextEdit,
     QGroupBox,
     QHBoxLayout,
+    QSizePolicy,
 )
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -46,6 +48,7 @@ from ._analysis import (
 class CiliaAssistantWidget(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
+        self.setObjectName("ciliaAssistant")
 
         self.viewer = napari_viewer
         self.video_path: str | None = None
@@ -60,17 +63,28 @@ class CiliaAssistantWidget(QWidget):
         self.last_peak_result: dict | None = None
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
-        self.title = QLabel("<b>Cilia Assistant</b>")
+        self.title = QLabel("Cilia Assistant")
+        self.title.setObjectName("appTitle")
         layout.addWidget(self.title)
+
+        self.subtitle = QLabel("ROI-based beat-frequency measurement for high-speed AVI microscopy.")
+        self.subtitle.setObjectName("appSubtitle")
+        self.subtitle.setWordWrap(True)
+        layout.addWidget(self.subtitle)
 
         # -------------------------
         # Input section
         # -------------------------
-        input_box = QGroupBox("1. Input")
+        input_box = QGroupBox("1  Input")
         input_layout = QVBoxLayout()
+        input_layout.setContentsMargins(12, 18, 12, 12)
+        input_layout.setSpacing(8)
 
         self.open_button = QPushButton("Open AVI")
+        self._style_button(self.open_button, "primary")
         self.open_button.setToolTip(
             "Load a high-speed AVI and inspect metadata before measuring CBF."
         )
@@ -86,6 +100,7 @@ class CiliaAssistantWidget(QWidget):
             "Frame rate is required to convert frame intervals or FFT bins into Hz. "
             "Correct this manually if AVI metadata are wrong."
         )
+        self.fps_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         input_layout.addWidget(self.fps_box)
 
         self.max_frames_box = QSpinBox()
@@ -95,6 +110,7 @@ class CiliaAssistantWidget(QWidget):
         self.max_frames_box.setToolTip(
             "Limits loading for very long videos. Use 0 to load the entire AVI."
         )
+        self.max_frames_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         input_layout.addWidget(self.max_frames_box)
 
         input_box.setLayout(input_layout)
@@ -103,10 +119,13 @@ class CiliaAssistantWidget(QWidget):
         # -------------------------
         # ROI section
         # -------------------------
-        roi_box = QGroupBox("2. Region of Interest")
+        roi_box = QGroupBox("2  Region of Interest")
         roi_layout = QVBoxLayout()
+        roi_layout.setContentsMargins(12, 18, 12, 12)
+        roi_layout.setSpacing(8)
 
         self.create_roi_button = QPushButton("Create / Edit ROI Rectangle")
+        self._style_button(self.create_roi_button, "secondary")
         self.create_roi_button.setToolTip(
             "Create a rectangle over an active ciliated edge; ROI placement is the main user-controlled scientific decision."
         )
@@ -114,6 +133,7 @@ class CiliaAssistantWidget(QWidget):
         roi_layout.addWidget(self.create_roi_button)
 
         self.measure_roi_button = QPushButton("Measure CBF from Selected ROI")
+        self._style_button(self.measure_roi_button, "primary")
         self.measure_roi_button.setToolTip(
             "Measure ROI mean-intensity oscillation, then estimate CBF using FFT and peak intervals."
         )
@@ -121,6 +141,7 @@ class CiliaAssistantWidget(QWidget):
         roi_layout.addWidget(self.measure_roi_button)
 
         self.measure_whole_button = QPushButton("Measure Whole-Frame Motion Frequency")
+        self._style_button(self.measure_whole_button, "secondary")
         self.measure_whole_button.setToolTip(
             "Exploratory only. Whole-frame signals may include illumination drift, stage motion, or tissue motion."
         )
@@ -133,8 +154,10 @@ class CiliaAssistantWidget(QWidget):
         # -------------------------
         # Analysis parameters
         # -------------------------
-        analysis_box = QGroupBox("3. Frequency Analysis")
+        analysis_box = QGroupBox("3  Frequency Analysis")
         analysis_layout = QVBoxLayout()
+        analysis_layout.setContentsMargins(12, 18, 12, 12)
+        analysis_layout.setSpacing(8)
 
         self.min_hz_box = QDoubleSpinBox()
         self.min_hz_box.setRange(0.1, 500)
@@ -144,6 +167,7 @@ class CiliaAssistantWidget(QWidget):
         self.min_hz_box.setToolTip(
             "Lower bound for the accepted biological rhythm; helps reject slow drift."
         )
+        self.min_hz_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         analysis_layout.addWidget(self.min_hz_box)
 
         self.max_hz_box = QDoubleSpinBox()
@@ -154,9 +178,11 @@ class CiliaAssistantWidget(QWidget):
         self.max_hz_box.setToolTip(
             "Upper bound for CBF search. The code also respects the Nyquist limit from FPS."
         )
+        self.max_hz_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         analysis_layout.addWidget(self.max_hz_box)
 
         self.kymo_button = QPushButton("Create Kymograph from Selected ROI")
+        self._style_button(self.kymo_button, "secondary")
         self.kymo_button.setToolTip(
             "Create a time-vs-position audit image to visually confirm rhythmic cilia motion."
         )
@@ -164,6 +190,7 @@ class CiliaAssistantWidget(QWidget):
         analysis_layout.addWidget(self.kymo_button)
 
         self.export_button = QPushButton("Export Last ROI Signal + FFT CSV")
+        self._style_button(self.export_button, "secondary")
         self.export_button.setToolTip(
             "Export raw time-intensity and FFT power data for methods documentation or re-analysis."
         )
@@ -176,16 +203,20 @@ class CiliaAssistantWidget(QWidget):
         # -------------------------
         # Plot section
         # -------------------------
-        plot_box = QGroupBox("4. Measurement Graph")
+        plot_box = QGroupBox("4  Measurement Graph")
         plot_layout = QVBoxLayout()
+        plot_layout.setContentsMargins(12, 18, 12, 12)
+        plot_layout.setSpacing(8)
 
         self.figure = Figure(figsize=(5, 4))
+        self.figure.patch.set_facecolor("#111827")
         self.canvas = FigureCanvas(self.figure)
         plot_layout.addWidget(self.canvas)
 
         plot_button_row = QHBoxLayout()
 
         self.copy_graph_button = QPushButton("Copy Graphic")
+        self._style_button(self.copy_graph_button, "secondary")
         self.copy_graph_button.setToolTip(
             "Copy the current measurement graph to the system clipboard as an image."
         )
@@ -193,6 +224,7 @@ class CiliaAssistantWidget(QWidget):
         plot_button_row.addWidget(self.copy_graph_button)
 
         self.save_graph_button = QPushButton("Save Graphic as TIFF")
+        self._style_button(self.save_graph_button, "secondary")
         self.save_graph_button.setToolTip(
             "Save the current measurement graph as a TIFF image."
         )
@@ -206,10 +238,13 @@ class CiliaAssistantWidget(QWidget):
         # -------------------------
         # Log section
         # -------------------------
-        log_box = QGroupBox("5. Log")
+        log_box = QGroupBox("5  Log")
         log_layout = QVBoxLayout()
+        log_layout.setContentsMargins(12, 18, 12, 12)
+        log_layout.setSpacing(8)
 
         self.clear_log_button = QPushButton("Clear Log")
+        self._style_button(self.clear_log_button, "secondary")
         self.clear_log_button.setToolTip(
             "Clear previous messages before opening or measuring the next video."
         )
@@ -217,13 +252,142 @@ class CiliaAssistantWidget(QWidget):
         log_layout.addWidget(self.clear_log_button)
 
         self.output = QTextEdit()
+        self.output.setObjectName("runLog")
         self.output.setReadOnly(True)
+        self.output.setPlaceholderText("Measurement messages, metadata, and QC notes will appear here.")
         log_layout.addWidget(self.output)
 
         log_box.setLayout(log_layout)
         layout.addWidget(log_box)
 
         self.setLayout(layout)
+        self._apply_ux_theme()
+
+    def _style_button(self, button: QPushButton, variant: str):
+        button.setProperty("variant", variant)
+        button.setCursor(Qt.PointingHandCursor)
+
+    def _apply_ux_theme(self):
+        self.setStyleSheet(
+            """
+            QWidget#ciliaAssistant {
+                background: #0f172a;
+                color: #e5e7eb;
+                font-size: 13px;
+            }
+
+            QLabel#appTitle {
+                color: #f8fafc;
+                font-size: 20px;
+                font-weight: 700;
+                padding: 2px 0 0 0;
+            }
+
+            QLabel#appSubtitle {
+                color: #a7b1c2;
+                padding: 0 0 4px 0;
+            }
+
+            QGroupBox {
+                background: #1f2937;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 8px;
+                font-weight: 700;
+                color: #f9fafb;
+            }
+
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 12px;
+                padding: 3px 9px;
+                border-radius: 7px;
+                background: #334155;
+                color: #f8fafc;
+            }
+
+            QPushButton {
+                min-height: 30px;
+                border-radius: 7px;
+                padding: 6px 10px;
+                font-weight: 650;
+            }
+
+            QPushButton[variant="primary"] {
+                background: #2563eb;
+                border: 1px solid #3b82f6;
+                color: #ffffff;
+            }
+
+            QPushButton[variant="primary"]:hover {
+                background: #1d4ed8;
+                border-color: #60a5fa;
+            }
+
+            QPushButton[variant="secondary"] {
+                background: #273244;
+                border: 1px solid #475569;
+                color: #e5e7eb;
+            }
+
+            QPushButton[variant="secondary"]:hover {
+                background: #334155;
+                border-color: #64748b;
+            }
+
+            QPushButton:pressed {
+                padding-top: 7px;
+                padding-bottom: 5px;
+            }
+
+            QPushButton:disabled {
+                background: #1f2937;
+                border-color: #334155;
+                color: #6b7280;
+            }
+
+            QSpinBox,
+            QDoubleSpinBox,
+            QTextEdit {
+                background: #0b1220;
+                border: 1px solid #334155;
+                border-radius: 7px;
+                color: #e5e7eb;
+                selection-background-color: #2563eb;
+                selection-color: #ffffff;
+            }
+
+            QSpinBox,
+            QDoubleSpinBox {
+                min-height: 28px;
+                padding: 3px 8px;
+            }
+
+            QSpinBox:focus,
+            QDoubleSpinBox:focus,
+            QTextEdit:focus {
+                border-color: #60a5fa;
+            }
+
+            QTextEdit#runLog {
+                min-height: 120px;
+                padding: 8px;
+                font-family: monospace;
+            }
+            """
+        )
+
+    def _style_plot_axes(self, axes):
+        axes.set_facecolor("#0b1220")
+        axes.tick_params(colors="#cbd5e1")
+        axes.xaxis.label.set_color("#dbeafe")
+        axes.yaxis.label.set_color("#dbeafe")
+        axes.title.set_color("#f8fafc")
+        for spine in axes.spines.values():
+            spine.set_color("#334155")
+        axes.grid(True, color="#334155", alpha=0.35, linewidth=0.7)
 
     # -------------------------
     # Logging
@@ -471,7 +635,8 @@ class CiliaAssistantWidget(QWidget):
         time = np.arange(len(signal)) / fps
 
         ax1 = self.figure.add_subplot(2, 1, 1)
-        ax1.plot(time, signal)
+        self._style_plot_axes(ax1)
+        ax1.plot(time, signal, color="#60a5fa", linewidth=1.6)
         ax1.set_title(f"{label}: ROI mean intensity vs time")
         ax1.set_xlabel("Time (s)")
         ax1.set_ylabel("Mean intensity")
@@ -479,17 +644,24 @@ class CiliaAssistantWidget(QWidget):
         peaks = peak_result.get("peaks", np.array([], dtype=int))
         if peaks is not None and len(peaks) > 0:
             valid_peaks = peaks[(peaks >= 0) & (peaks < len(signal))]
-            ax1.plot(time[valid_peaks], signal[valid_peaks], "o", markersize=3)
+            ax1.plot(
+                time[valid_peaks],
+                signal[valid_peaks],
+                "o",
+                color="#f59e0b",
+                markersize=3,
+            )
 
         ax2 = self.figure.add_subplot(2, 1, 2)
+        self._style_plot_axes(ax2)
         freqs = fft_result["freqs"]
         power = fft_result["power"]
         cbf_hz = fft_result["cbf_hz"]
 
-        ax2.plot(freqs, power)
+        ax2.plot(freqs, power, color="#22c55e", linewidth=1.6)
         # Mark the selected spectral peak so the reviewer/user can judge whether
         # the reported CBF corresponds to a clear dominant rhythm.
-        ax2.axvline(cbf_hz, linestyle="--")
+        ax2.axvline(cbf_hz, linestyle="--", color="#f59e0b", linewidth=1.3)
         ax2.set_xlim(0, min(fft_result["effective_max_hz"] * 1.2, fps / 2.0))
         ax2.set_title(f"FFT spectrum: dominant rhythm = {cbf_hz:.3f} Hz")
         ax2.set_xlabel("Frequency (Hz)")

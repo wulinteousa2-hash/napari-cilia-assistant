@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "Wulin Teo", email = "wteo@houstonmethodist.org" }
+  { name = "Wulin Teo" },
 ]
 dependencies = [
     "napari",
@@ -22,8 +22,17 @@ dependencies = [
     "matplotlib"
 ]
 
+[project.urls]
+Homepage = "https://github.com/wulinteousa2-hash/napari-cilia-assistant"
+Repository = "https://github.com/wulinteousa2-hash/napari-cilia-assistant"
+Issues = "https://github.com/wulinteousa2-hash/napari-cilia-assistant/issues"
+
+
 [project.entry-points."napari.manifest"]
 napari-cilia-assistant = "napari_cilia_assistant:napari.yaml"
+
+
+
 
 [tool.setuptools.packages.find]
 where = ["src"]
