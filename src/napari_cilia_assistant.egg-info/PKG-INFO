@@ -1,9 +1,12 @@
 Metadata-Version: 2.4
 Name: napari-cilia-assistant
-Version: 0.1.0
+Version: 0.2.0
 Summary: A napari plugin for measuring ciliary beat frequency from high-speed microscopy videos.
-Author-email: Wulin Teo <wteo@houstonmethodist.org>
+Author: Wulin Teo
 License: MIT
+Project-URL: Homepage, https://github.com/wulinteousa2-hash/napari-cilia-assistant
+Project-URL: Repository, https://github.com/wulinteousa2-hash/napari-cilia-assistant
+Project-URL: Issues, https://github.com/wulinteousa2-hash/napari-cilia-assistant/issues
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 License-File: LICENSE
@@ -15,6 +18,11 @@ Requires-Dist: qtpy
 Requires-Dist: magicgui
 Requires-Dist: matplotlib
 Dynamic: license-file
+
+
+## User Interface
+
+![Cilia Assistant UI](docs/ui.png)
 
 # napari-cilia-assistant
 
