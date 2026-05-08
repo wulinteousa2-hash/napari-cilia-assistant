@@ -1,3 +1,8 @@
+
+## User Interface
+
+![Cilia Assistant UI](docs/ui.png)
+
 # napari-cilia-assistant
 
 `napari-cilia-assistant` is a napari plugin for transparent, ROI-based quantification of ciliary beat frequency (CBF) from high-speed AVI microscopy videos.

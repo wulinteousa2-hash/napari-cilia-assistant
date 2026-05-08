@@ -1,3 +1,4 @@
+LICENSE
 README.md
 pyproject.toml
 src/napari_cilia_assistant/__init__.py
