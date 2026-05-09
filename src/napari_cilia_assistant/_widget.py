@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QTextEdit,
+    QCheckBox,
     QHBoxLayout,
     QFrame,
     QScrollArea,
@@ -134,24 +135,47 @@ class CiliaAssistantWidget(QWidget):
         self.info: dict | None = None
 
         self.roi_layer_name = "Cilia ROI"
+        self.background_roi_layer_name = "Cilia Background ROI"
 
         self.last_roi: tuple[int, int, int, int] | None = None
+        self.last_background_roi: tuple[int, int, int, int] | None = None
         self.last_signal: np.ndarray | None = None
+        self.last_raw_signal: np.ndarray | None = None
+        self.last_background_signal: np.ndarray | None = None
         self.last_fft_result: dict | None = None
         self.last_peak_result: dict | None = None
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        header_frame = QFrame()
+        header_frame.setObjectName("assistantHeader")
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(12, 10, 12, 10)
+        header_layout.setSpacing(12)
+
+        self.logo = QLabel("CBF")
+        self.logo.setObjectName("appLogo")
+        self.logo.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(self.logo)
+
+        title_column = QVBoxLayout()
+        title_column.setContentsMargins(0, 0, 0, 0)
+        title_column.setSpacing(2)
 
         self.title = QLabel("Cilia Assistant")
         self.title.setObjectName("appTitle")
-        layout.addWidget(self.title)
+        title_column.addWidget(self.title)
 
-        self.subtitle = QLabel("ROI-based beat-frequency measurement for high-speed AVI microscopy.")
+        self.subtitle = QLabel("ROI-based beat-frequency measurement for cilia videos")
         self.subtitle.setObjectName("appSubtitle")
         self.subtitle.setWordWrap(True)
-        layout.addWidget(self.subtitle)
+        title_column.addWidget(self.subtitle)
+
+        header_layout.addLayout(title_column, 1)
+        header_frame.setLayout(header_layout)
+        layout.addWidget(header_frame)
 
         scroll_area = QScrollArea()
         scroll_area.setObjectName("assistantScrollArea")
@@ -165,6 +189,22 @@ class CiliaAssistantWidget(QWidget):
         content_layout = QVBoxLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(8)
+
+        # -------------------------
+        # Results section
+        # -------------------------
+        results_box = QWidget()
+        results_layout = QHBoxLayout()
+        results_layout.setContentsMargins(0, 0, 0, 0)
+        results_layout.setSpacing(8)
+
+        self.fft_result_card = self._build_result_card("FFT CBF", "—", "Primary estimate")
+        self.peak_result_card = self._build_result_card("Peak CBF", "—", "Independent check")
+        results_layout.addWidget(self.fft_result_card)
+        results_layout.addWidget(self.peak_result_card)
+        results_box.setLayout(results_layout)
+
+        content_layout.addWidget(CollapsiblePanel("Results. Key Measurements", results_box, collapsed=False))
 
         # -------------------------
         # Input section
@@ -223,7 +263,23 @@ class CiliaAssistantWidget(QWidget):
         self.create_roi_button.clicked.connect(self.create_or_select_roi_layer)
         roi_layout.addWidget(self.create_roi_button)
 
-        self.measure_roi_button = QPushButton("Measure CBF from Selected ROI")
+        self.create_background_button = QPushButton("Create / Edit Background ROI")
+        self._style_button(self.create_background_button, "secondary")
+        self.create_background_button.setToolTip(
+            "Optional negative-control rectangle in a nearby non-cilia region. "
+            "Use it to subtract shared illumination or focus drift from the cilia ROI signal."
+        )
+        self.create_background_button.clicked.connect(self.create_or_select_background_roi_layer)
+        roi_layout.addWidget(self.create_background_button)
+
+        self.subtract_background_check = QCheckBox("Subtract background ROI when measuring")
+        self.subtract_background_check.setChecked(True)
+        self.subtract_background_check.setToolTip(
+            "When a background ROI exists, subtract its mean-intensity trace from the selected cilia ROI before FFT."
+        )
+        roi_layout.addWidget(self.subtract_background_check)
+
+        self.measure_roi_button = QPushButton("Analyze Selected ROI")
         self._style_button(self.measure_roi_button, "primary")
         self.measure_roi_button.setToolTip(
             "Measure ROI mean-intensity oscillation, then estimate CBF using FFT and peak intervals."
@@ -231,7 +287,7 @@ class CiliaAssistantWidget(QWidget):
         self.measure_roi_button.clicked.connect(self.measure_selected_roi)
         roi_layout.addWidget(self.measure_roi_button)
 
-        self.measure_whole_button = QPushButton("Measure Whole-Frame Motion Frequency")
+        self.measure_whole_button = QPushButton("Analyze Whole-Frame Motion")
         self._style_button(self.measure_whole_button, "secondary")
         self.measure_whole_button.setToolTip(
             "Exploratory only. Whole-frame signals may include illumination drift, stage motion, or tissue motion."
@@ -299,10 +355,10 @@ class CiliaAssistantWidget(QWidget):
         plot_layout.setContentsMargins(0, 0, 0, 0)
         plot_layout.setSpacing(8)
 
-        self.figure = Figure(figsize=(5, 3))
-        self.figure.patch.set_facecolor("#111827")
+        self.figure = Figure(figsize=(5, 3.4))
+        self.figure.patch.set_facecolor("#070d18")
         self.canvas = FigureCanvas(self.figure)
-        self.canvas.setMinimumHeight(220)
+        self.canvas.setMinimumHeight(380)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         plot_layout.addWidget(self.canvas)
 
@@ -355,7 +411,7 @@ class CiliaAssistantWidget(QWidget):
         log_layout.addWidget(self.output)
 
         log_box.setLayout(log_layout)
-        log_panel = CollapsiblePanel("Step 5. Log", log_box, collapsed=False)
+        log_panel = CollapsiblePanel("Step 6. Log", log_box, collapsed=True)
         log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content_layout.addWidget(log_panel, 1)
 
@@ -370,25 +426,76 @@ class CiliaAssistantWidget(QWidget):
         button.setProperty("variant", variant)
         button.setCursor(Qt.PointingHandCursor)
 
+    def _build_result_card(self, label: str, value: str, note: str) -> QFrame:
+        card = QFrame()
+        card.setObjectName("resultCard")
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(4)
+
+        title = QLabel(label)
+        title.setObjectName("resultLabel")
+        layout.addWidget(title)
+
+        value_label = QLabel(value)
+        value_label.setObjectName("resultValue")
+        value_label.setProperty("role", label.lower().replace(" ", "_"))
+        layout.addWidget(value_label)
+
+        note_label = QLabel(note)
+        note_label.setObjectName("resultNote")
+        layout.addWidget(note_label)
+
+        card.setLayout(layout)
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        return card
+
+    def _set_result_card_value(self, card: QFrame, value: str, note: str | None = None):
+        labels = card.findChildren(QLabel)
+        if len(labels) >= 2:
+            labels[1].setText(value)
+        if note is not None and len(labels) >= 3:
+            labels[2].setText(note)
+
     def _apply_ux_theme(self):
         self.setStyleSheet(
             """
             QWidget#ciliaAssistant {
-                background: #0f172a;
-                color: #e5e7eb;
+                background: #080f1c;
+                color: #e8eef7;
                 font-size: 13px;
             }
 
+            QFrame#assistantHeader {
+                background: #101a2b;
+                border: 1px solid #24344f;
+                border-radius: 8px;
+            }
+
+            QLabel#appLogo {
+                background: #13294b;
+                color: #70e1ff;
+                border: 1px solid #2563eb;
+                border-radius: 8px;
+                min-width: 48px;
+                max-width: 48px;
+                min-height: 48px;
+                max-height: 48px;
+                font-size: 15px;
+                font-weight: 900;
+            }
+
             QLabel#appTitle {
-                color: #f8fafc;
-                font-size: 20px;
-                font-weight: 700;
-                padding: 2px 0 0 0;
+                color: #f8fbff;
+                font-size: 22px;
+                font-weight: 850;
+                padding: 0px;
             }
 
             QLabel#appSubtitle {
-                color: #a7b1c2;
-                padding: 0 0 4px 0;
+                color: #c3d0e2;
+                font-size: 13px;
+                padding: 0px;
             }
 
             QScrollArea#assistantScrollArea,
@@ -397,16 +504,16 @@ class CiliaAssistantWidget(QWidget):
             }
 
             QFrame#collapsibleBody {
-                background: #1a2130;
-                border: 1px solid #2d3748;
-                border-left: 4px solid #5e7892;
+                background: #101827;
+                border: 1px solid #263750;
+                border-left: 4px solid #38bdf8;
                 border-radius: 8px;
             }
 
             QToolButton#collapsibleToggle {
-                background: #101722;
-                color: #eef2f7;
-                border: 1px solid #6f8fae;
+                background: #0b1321;
+                color: #dcecff;
+                border: 1px solid #7aa7cf;
                 border-radius: 9px;
                 min-width: 22px;
                 max-width: 22px;
@@ -417,14 +524,15 @@ class CiliaAssistantWidget(QWidget):
             }
 
             QToolButton#collapsibleToggle:hover {
-                border-color: #9db6cf;
-                color: #f1f5f9;
+                background: #13243a;
+                border-color: #a7d7ff;
+                color: #ffffff;
             }
 
             QLabel#collapsibleStepBadge {
-                background: #40566e;
-                color: #f1f5f9;
-                border: 1px solid #6f8fae;
+                background: #233a5c;
+                color: #eef7ff;
+                border: 1px solid #5f91bc;
                 border-radius: 9px;
                 padding: 3px 8px;
                 font-size: 12px;
@@ -432,43 +540,43 @@ class CiliaAssistantWidget(QWidget):
             }
 
             QLabel#collapsibleTitle {
-                color: #eef2f7;
+                color: #f4f8ff;
                 font-size: 13px;
                 font-weight: 800;
                 padding: 2px 2px;
             }
 
             QFrame#collapsibleHeaderLine {
-                color: #2d3748;
+                color: #263750;
             }
 
             QPushButton {
-                min-height: 30px;
+                min-height: 32px;
                 border-radius: 7px;
-                padding: 6px 10px;
-                font-weight: 650;
+                padding: 6px 12px;
+                font-weight: 750;
             }
 
             QPushButton[variant="primary"] {
-                background: #2563eb;
-                border: 1px solid #3b82f6;
+                background: #2f6df6;
+                border: 1px solid #4d8dff;
                 color: #ffffff;
             }
 
             QPushButton[variant="primary"]:hover {
-                background: #1d4ed8;
-                border-color: #60a5fa;
+                background: #3b82f6;
+                border-color: #89b8ff;
             }
 
             QPushButton[variant="secondary"] {
-                background: #273244;
-                border: 1px solid #475569;
-                color: #e5e7eb;
+                background: #172236;
+                border: 1px solid #334967;
+                color: #e8eef7;
             }
 
             QPushButton[variant="secondary"]:hover {
-                background: #334155;
-                border-color: #64748b;
+                background: #20324e;
+                border-color: #5b789d;
             }
 
             QPushButton:pressed {
@@ -485,12 +593,35 @@ class CiliaAssistantWidget(QWidget):
             QSpinBox,
             QDoubleSpinBox,
             QTextEdit {
-                background: #0b1220;
-                border: 1px solid #334155;
+                background: #070d18;
+                border: 1px solid #263750;
                 border-radius: 7px;
-                color: #e5e7eb;
-                selection-background-color: #2563eb;
+                color: #e8eef7;
+                selection-background-color: #2f6df6;
                 selection-color: #ffffff;
+            }
+
+            QCheckBox {
+                color: #cbd7e8;
+                spacing: 8px;
+                font-weight: 650;
+            }
+
+            QCheckBox::indicator {
+                width: 15px;
+                height: 15px;
+            }
+
+            QCheckBox::indicator:unchecked {
+                background: #070d18;
+                border: 1px solid #45637f;
+                border-radius: 3px;
+            }
+
+            QCheckBox::indicator:checked {
+                background: #2f6df6;
+                border: 1px solid #70e1ff;
+                border-radius: 3px;
             }
 
             QSpinBox,
@@ -502,23 +633,48 @@ class CiliaAssistantWidget(QWidget):
             QSpinBox:focus,
             QDoubleSpinBox:focus,
             QTextEdit:focus {
-                border-color: #60a5fa;
+                border-color: #70e1ff;
             }
 
             QTextEdit#runLog {
                 min-height: 120px;
                 padding: 8px;
                 font-family: monospace;
+                color: #dbeafe;
+            }
+
+            QFrame#resultCard {
+                background: #0b1321;
+                border: 1px solid #2b4464;
+                border-radius: 8px;
+            }
+
+            QLabel#resultLabel {
+                color: #b8c7da;
+                font-size: 12px;
+                font-weight: 750;
+            }
+
+            QLabel#resultValue {
+                color: #7cff8a;
+                font-size: 24px;
+                font-weight: 900;
+                padding: 2px 0px;
+            }
+
+            QLabel#resultNote {
+                color: #8fa2bb;
+                font-size: 11px;
             }
 
             QScrollBar:vertical {
-                background: #111827;
+                background: #0b1321;
                 width: 12px;
                 margin: 2px;
             }
 
             QScrollBar::handle:vertical {
-                background: #64748b;
+                background: #45637f;
                 border-radius: 5px;
                 min-height: 28px;
             }
@@ -531,14 +687,17 @@ class CiliaAssistantWidget(QWidget):
         )
 
     def _style_plot_axes(self, axes):
-        axes.set_facecolor("#0b1220")
-        axes.tick_params(colors="#cbd5e1")
+        axes.set_facecolor("#070d18")
+        axes.tick_params(colors="#d3deec", labelsize=9)
         axes.xaxis.label.set_color("#dbeafe")
         axes.yaxis.label.set_color("#dbeafe")
-        axes.title.set_color("#f8fafc")
+        axes.title.set_color("#f8fbff")
+        axes.xaxis.label.set_size(9)
+        axes.yaxis.label.set_size(9)
+        axes.title.set_size(11)
         for spine in axes.spines.values():
-            spine.set_color("#334155")
-        axes.grid(True, color="#334155", alpha=0.35, linewidth=0.7)
+            spine.set_color("#40546f")
+        axes.grid(True, color="#263750", alpha=0.55, linewidth=0.7)
 
     # -------------------------
     # Logging
@@ -607,33 +766,64 @@ class CiliaAssistantWidget(QWidget):
     # ROI handling
     # -------------------------
     def _find_roi_layer(self):
+        return self._find_layer(self.roi_layer_name)
+
+    def _find_background_roi_layer(self):
+        return self._find_layer(self.background_roi_layer_name)
+
+    def _find_layer(self, layer_name: str):
         for layer in self.viewer.layers:
-            if layer.name == self.roi_layer_name:
+            if layer.name == layer_name:
                 return layer
         return None
 
     def create_or_select_roi_layer(self):
+        self._create_or_select_rectangle_layer(
+            layer_name=self.roi_layer_name,
+            log_name="ROI",
+            edge_color="yellow",
+            face_color=[1, 1, 0, 0.10],
+            y_bounds=(0.40, 0.60),
+            x_bounds=(0.40, 0.60),
+        )
+
+    def create_or_select_background_roi_layer(self):
+        self._create_or_select_rectangle_layer(
+            layer_name=self.background_roi_layer_name,
+            log_name="background ROI",
+            edge_color="cyan",
+            face_color=[0, 1, 1, 0.08],
+            y_bounds=(0.08, 0.22),
+            x_bounds=(0.40, 0.60),
+        )
+
+    def _create_or_select_rectangle_layer(
+        self,
+        layer_name: str,
+        log_name: str,
+        edge_color: str,
+        face_color,
+        y_bounds: tuple[float, float],
+        x_bounds: tuple[float, float],
+    ):
         if self.stack is None:
             self.log("Load an AVI first.")
             return
 
-        existing = self._find_roi_layer()
+        existing = self._find_layer(layer_name)
 
         if existing is not None:
             self.viewer.layers.selection.active = existing
             existing.mode = "select"
-            self.log("Selected existing ROI layer. Move or resize the rectangle over active cilia.")
+            self.log(f"Selected existing {log_name} layer. Move or resize the rectangle as needed.")
             return
 
         _, y_size, x_size = self.stack.shape
 
-        # Default rectangle in the center. The user should move it to the
-        # active ciliated edge; ROI placement determines whether the measured
-        # signal reflects cilia motion or unrelated tissue/illumination changes.
-        y0 = int(y_size * 0.40)
-        y1 = int(y_size * 0.60)
-        x0 = int(x_size * 0.40)
-        x1 = int(x_size * 0.60)
+        y0 = int(y_size * y_bounds[0])
+        y1 = int(y_size * y_bounds[1])
+        x0 = int(x_size * x_bounds[0])
+        x1 = int(x_size * x_bounds[1])
 
         rectangle = np.array(
             [
@@ -647,28 +837,44 @@ class CiliaAssistantWidget(QWidget):
         roi_layer = self.viewer.add_shapes(
             [rectangle],
             shape_type=["rectangle"],
-            name=self.roi_layer_name,
-            edge_color="yellow",
-            face_color=[1, 1, 0, 0.10],
+            name=layer_name,
+            edge_color=edge_color,
+            face_color=face_color,
             edge_width=2,
         )
 
         roi_layer.mode = "select"
         self.viewer.layers.selection.active = roi_layer
 
-        self.log("Created ROI rectangle. Move/resize it over the moving cilia edge, then click 'Measure CBF from Selected ROI'.")
+        self.log(f"Created {log_name} rectangle. Move/resize it before measuring.")
 
     def _get_selected_roi(self) -> tuple[int, int, int, int]:
+        return self._get_roi_from_layer(
+            layer_name=self.roi_layer_name,
+            missing_message="No ROI layer found. Click 'Create / Edit ROI Rectangle' first.",
+        )
+
+    def _get_background_roi(self) -> tuple[int, int, int, int]:
+        return self._get_roi_from_layer(
+            layer_name=self.background_roi_layer_name,
+            missing_message="No background ROI layer found.",
+        )
+
+    def _get_roi_from_layer(
+        self,
+        layer_name: str,
+        missing_message: str,
+    ) -> tuple[int, int, int, int]:
         if self.stack is None:
             raise ValueError("No AVI stack loaded.")
 
-        roi_layer = self._find_roi_layer()
+        roi_layer = self._find_layer(layer_name)
 
         if roi_layer is None:
-            raise ValueError("No ROI layer found. Click 'Create / Edit ROI Rectangle' first.")
+            raise ValueError(missing_message)
 
         if len(roi_layer.data) == 0:
-            raise ValueError("ROI layer exists but contains no shape.")
+            raise ValueError(f"{layer_name} layer exists but contains no shape.")
 
         selected = list(roi_layer.selected_data)
 
@@ -719,10 +925,17 @@ class CiliaAssistantWidget(QWidget):
         min_hz = float(self.min_hz_box.value())
         max_hz = float(self.max_hz_box.value())
 
-        # Convert the selected video region into a single temporal signal.
-        # This intentionally mirrors classical light-intensity fluctuation
-        # approaches, while keeping the ROI visible and editable in napari.
-        signal = roi_mean_signal(self.stack, roi=roi)
+        raw_signal = roi_mean_signal(self.stack, roi=roi)
+        background_roi = None
+        background_signal = None
+        signal = raw_signal
+
+        if roi is not None and self.subtract_background_check.isChecked():
+            background_layer = self._find_background_roi_layer()
+            if background_layer is not None and len(background_layer.data) > 0:
+                background_roi = self._get_background_roi()
+                background_signal = roi_mean_signal(self.stack, roi=background_roi)
+                signal = raw_signal - background_signal
 
         # FFT is the primary automated estimate; peak intervals provide an
         # independent check against obvious failure modes such as weak/noisy ROIs.
@@ -741,7 +954,10 @@ class CiliaAssistantWidget(QWidget):
         )
 
         self.last_roi = roi
+        self.last_background_roi = background_roi
         self.last_signal = signal
+        self.last_raw_signal = raw_signal
+        self.last_background_signal = background_signal
         self.last_fft_result = fft_result
         self.last_peak_result = peak_result
 
@@ -755,6 +971,14 @@ class CiliaAssistantWidget(QWidget):
         else:
             x, y, w, h = roi
             self.log(f"  ROI: x={x}, y={y}, width={w}, height={h}")
+            if background_roi is not None:
+                bx, by, bw, bh = background_roi
+                self.log(f"  Background ROI: x={bx}, y={by}, width={bw}, height={bh}")
+                self.log("  Signal used: ROI mean intensity minus background ROI mean intensity")
+            elif self.subtract_background_check.isChecked():
+                self.log("  Background correction: not used; no background ROI found.")
+            else:
+                self.log("  Background correction: off")
 
         self.log(f"  FPS used: {fps:.3f}")
         self.log(f"  Search range: {min_hz:.2f}–{fft_result['effective_max_hz']:.2f} Hz")
@@ -762,14 +986,30 @@ class CiliaAssistantWidget(QWidget):
 
         self.log(f"  FFT CBF: {fft_result['cbf_hz']:.3f} Hz")
         self.log(f"  FFT peak/background: {fft_result['peak_to_background']:.2f}")
+        self._set_result_card_value(
+            self.fft_result_card,
+            f"{fft_result['cbf_hz']:.3f} Hz",
+            f"Peak/background {fft_result['peak_to_background']:.2f}"
+            + (" · BG corrected" if background_roi is not None else ""),
+        )
 
         peak_cbf = peak_result.get("cbf_hz", np.nan)
         if np.isfinite(peak_cbf):
             self.log(f"  Peak-interval CBF: {peak_cbf:.3f} Hz")
             self.log(f"  Detected peaks: {peak_result.get('n_peaks', 0)}")
+            self._set_result_card_value(
+                self.peak_result_card,
+                f"{peak_cbf:.3f} Hz",
+                f"{peak_result.get('n_peaks', 0)} detected peaks",
+            )
         else:
             self.log("  Peak-interval CBF: not reliable")
             self.log(f"  Peak note: {peak_result.get('note', 'N/A')}")
+            self._set_result_card_value(
+                self.peak_result_card,
+                "Not reliable",
+                peak_result.get("note", "Check ROI/video"),
+            )
 
         self._plot_signal_and_fft(signal, fft_result, peak_result, fps, label)
 
@@ -788,9 +1028,10 @@ class CiliaAssistantWidget(QWidget):
         ax1 = self.figure.add_subplot(2, 1, 1)
         self._style_plot_axes(ax1)
         ax1.plot(time, signal, color="#60a5fa", linewidth=1.6)
-        ax1.set_title(f"{label}: ROI mean intensity vs time")
+        signal_label = "background-corrected signal" if self.last_background_signal is not None else "mean intensity"
+        ax1.set_title(f"{label}: {signal_label}", loc="left", pad=8)
         ax1.set_xlabel("Time (s)")
-        ax1.set_ylabel("Mean intensity")
+        ax1.set_ylabel("Intensity")
 
         peaks = peak_result.get("peaks", np.array([], dtype=int))
         if peaks is not None and len(peaks) > 0:
@@ -813,12 +1054,35 @@ class CiliaAssistantWidget(QWidget):
         # Mark the selected spectral peak so the reviewer/user can judge whether
         # the reported CBF corresponds to a clear dominant rhythm.
         ax2.axvline(cbf_hz, linestyle="--", color="#f59e0b", linewidth=1.3)
+        ax2.text(
+            0.98,
+            0.90,
+            f"FFT CBF\n{cbf_hz:.3f} Hz",
+            transform=ax2.transAxes,
+            ha="right",
+            va="top",
+            color="#7cff8a",
+            fontsize=10,
+            fontweight="bold",
+            bbox={
+                "boxstyle": "round,pad=0.35",
+                "facecolor": "#0b1321",
+                "edgecolor": "#2b4464",
+                "alpha": 0.92,
+            },
+        )
         ax2.set_xlim(0, min(fft_result["effective_max_hz"] * 1.2, fps / 2.0))
-        ax2.set_title(f"FFT spectrum: dominant rhythm = {cbf_hz:.3f} Hz")
+        ax2.set_title("FFT power spectrum", loc="left", pad=8)
         ax2.set_xlabel("Frequency (Hz)")
-        ax2.set_ylabel("FFT power")
+        ax2.set_ylabel("Power")
 
-        self.figure.tight_layout()
+        self.figure.subplots_adjust(
+            left=0.14,
+            right=0.98,
+            top=0.94,
+            bottom=0.11,
+            hspace=0.58,
+        )
         self.canvas.draw()
 
     # -------------------------
@@ -916,12 +1180,21 @@ class CiliaAssistantWidget(QWidget):
         signal_path = Path(path)
         fft_path = signal_path.with_name(signal_path.stem + "_fft.csv")
 
-        signal_table = np.column_stack([time, self.last_signal])
+        header = "time_sec,roi_signal_used"
+        columns = [time, self.last_signal]
+        if self.last_raw_signal is not None and self.last_background_signal is not None:
+            columns = [time, self.last_raw_signal, self.last_background_signal, self.last_signal]
+            header = (
+                "time_sec,roi_mean_intensity,background_mean_intensity,"
+                "background_corrected_intensity"
+            )
+
+        signal_table = np.column_stack(columns)
         np.savetxt(
             signal_path,
             signal_table,
             delimiter=",",
-            header="time_sec,roi_mean_intensity",
+            header=header,
             comments="",
         )
 
