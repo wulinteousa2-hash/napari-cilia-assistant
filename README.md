@@ -9,6 +9,23 @@
 
 The plugin is designed for collaborative scientific review. It opens AVI files, reads acquisition metadata, loads a selected movie as a napari time stack, lets the user place a rectangular ROI over visibly beating cilia, computes a time-intensity trace, estimates the dominant beat frequency by FFT, provides a peak-interval sanity check, generates a kymograph, and exports raw signal/FFT data plus a combined batch results table.
 
+## Installation for development
+
+Install Miniconda or Anaconda first. Then open a terminal and run:
+
+```bash
+conda create -n cilia-assistant python=3.11 -y
+conda activate cilia-assistant
+conda install -c conda-forge napari pyqt git -y
+git clone https://github.com/wulinteousa2-hash/napari-cilia-assistant.git
+cd napari-cilia-assistant
+pip install -e .
+napari
+```
+
+In napari, open `Plugins > Cilia Assistant`.
+
+
 ## Scientific purpose
 
 The goal is to support a defensible first-pass measurement of ciliary motion from high-speed video data. The current implementation quantifies rhythmic motion frequency, not full ciliary waveform or clinical diagnostic beat-pattern classification.
@@ -183,32 +200,9 @@ This workflow estimates beat frequency, not full ciliary waveform. A sample can 
 
 1. **CBF is not waveform analysis.** A normal frequency can coexist with abnormal ciliary beat pattern.
 2. **ROI placement is critical.** The algorithm measures intensity fluctuation in the selected region. Poor ROI placement can measure tissue drift, illumination fluctuation, moving debris, or whole-frame motion instead of cilia.
-3. **Whole-frame measurement is exploratory.** It can detect global motion but is not preferred for publication-style CBF.
-4. **Method-specific reference ranges are required.** CBF values should not be compared across different acquisition systems, frame rates, temperatures, or analysis methods without validation.
-5. **Mixed motility phenotypes can be misleading.** Static, twitching, hyperfrequent, and normally beating regions can coexist. A single mean CBF may not represent the sample.
-6. **Batch analysis does not replace biological replication.** Multiple videos from the same animal/sample are technical or sampling replicates, not independent biological replicates unless designed as such.
-7. **This plugin is not a diagnostic PCD classifier.** It supports quantitative motion analysis but does not replace expert HSVA beat-pattern assessment, electron microscopy, genetic testing, or clinical interpretation.
 
-## Suggested reporting language
 
-> Ciliary beat frequency was quantified from high-speed AVI microscopy videos using `napari-cilia-assistant`. Videos were loaded as grayscale time stacks. A rectangular ROI was placed over visibly beating cilia, and mean ROI intensity was measured across frames. The temporal signal was detrended, windowed, and analyzed by FFT. The dominant frequency within the predefined search range was reported as CBF. Peak-interval analysis and ROI kymographs were used as visual/quantitative quality-control checks. Raw ROI time-intensity traces, FFT spectra, and combined per-video batch results were exported as CSV files for reproducibility.
 
-## Installation for development
-
-```bash
-pip install -e .
-```
-
-## Minimal package files
-
-```text
-napari_cilia_assistant/
-  __init__.py
-  _analysis.py
-  _widget.py
-napari.yaml
-README.md
-```
 
 ## References
 
