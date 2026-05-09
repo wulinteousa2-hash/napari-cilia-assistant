@@ -46,6 +46,7 @@ napari.log
 # Data / videos / outputs
 *.avi
 *.mp4
+!docs/ui.mp4
 *.mov
 *.tif
 *.tiff

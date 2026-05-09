@@ -1,7 +1,7 @@
 
 ## User Interface
 
-![Cilia Assistant UI](docs/ui.png)
+<video src="docs/ui.mp4" controls width="100%" aria-label="Cilia Assistant UI demo"></video>
 
 # napari-cilia-assistant
 

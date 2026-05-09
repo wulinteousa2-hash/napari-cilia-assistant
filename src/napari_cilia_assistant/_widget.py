@@ -25,9 +25,11 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QTextEdit,
-    QGroupBox,
     QHBoxLayout,
+    QFrame,
+    QScrollArea,
     QSizePolicy,
+    QToolButton,
 )
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -45,10 +47,86 @@ from ._analysis import (
 )
 
 
+class CollapsiblePanel(QWidget):
+    """Compact section panel matching the other napari assistant tools."""
+
+    def __init__(
+        self,
+        title: str,
+        content: QWidget,
+        collapsed: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+
+        self.content = content
+        step_text, title_text = self._split_title(title)
+
+        self.toggle_button = QToolButton()
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(collapsed)
+        self.toggle_button.setText("+" if collapsed else "−")
+        self.toggle_button.setAutoRaise(True)
+        self.toggle_button.setObjectName("collapsibleToggle")
+        self.toggle_button.clicked.connect(self._on_toggled)
+
+        self.step_label = QLabel(step_text)
+        self.step_label.setObjectName("collapsibleStepBadge")
+        self.step_label.setVisible(bool(step_text))
+
+        self.title_label = QLabel(title_text)
+        self.title_label.setObjectName("collapsibleTitle")
+
+        self.header_line = QFrame()
+        self.header_line.setFrameShape(QFrame.HLine)
+        self.header_line.setFrameShadow(QFrame.Sunken)
+        self.header_line.setObjectName("collapsibleHeaderLine")
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+        header_layout.addWidget(self.toggle_button)
+        header_layout.addWidget(self.step_label)
+        header_layout.addWidget(self.title_label)
+        header_layout.addWidget(self.header_line, 1)
+
+        self.body_frame = QFrame()
+        self.body_frame.setObjectName("collapsibleBody")
+        body_layout = QVBoxLayout()
+        body_layout.setContentsMargins(8, 8, 8, 8)
+        body_layout.setSpacing(6)
+        body_layout.addWidget(self.content)
+        self.body_frame.setLayout(body_layout)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addLayout(header_layout)
+        layout.addWidget(self.body_frame)
+        self.setLayout(layout)
+
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._on_toggled(collapsed)
+
+    def _split_title(self, title: str) -> tuple[str, str]:
+        normalized = title.strip()
+        head, separator, tail = normalized.partition(".")
+        if separator and head.strip() and tail.strip():
+            return head.strip(), tail.strip()
+        return "", normalized
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.toggle_button.setText("+" if checked else "−")
+        self.body_frame.setVisible(not checked)
+        self.updateGeometry()
+
+
 class CiliaAssistantWidget(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
         self.setObjectName("ciliaAssistant")
+        self.setMinimumWidth(360)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.viewer = napari_viewer
         self.video_path: str | None = None
@@ -64,7 +142,7 @@ class CiliaAssistantWidget(QWidget):
 
         layout = QVBoxLayout()
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         self.title = QLabel("Cilia Assistant")
         self.title.setObjectName("appTitle")
@@ -75,12 +153,25 @@ class CiliaAssistantWidget(QWidget):
         self.subtitle.setWordWrap(True)
         layout.addWidget(self.subtitle)
 
+        scroll_area = QScrollArea()
+        scroll_area.setObjectName("assistantScrollArea")
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        scroll_content = QWidget()
+        scroll_content.setObjectName("assistantScrollContent")
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
+
         # -------------------------
         # Input section
         # -------------------------
-        input_box = QGroupBox("1  Input")
+        input_box = QWidget()
         input_layout = QVBoxLayout()
-        input_layout.setContentsMargins(12, 18, 12, 12)
+        input_layout.setContentsMargins(0, 0, 0, 0)
         input_layout.setSpacing(8)
 
         self.open_button = QPushButton("Open AVI")
@@ -114,14 +205,14 @@ class CiliaAssistantWidget(QWidget):
         input_layout.addWidget(self.max_frames_box)
 
         input_box.setLayout(input_layout)
-        layout.addWidget(input_box)
+        content_layout.addWidget(CollapsiblePanel("Step 1. Input", input_box, collapsed=False))
 
         # -------------------------
         # ROI section
         # -------------------------
-        roi_box = QGroupBox("2  Region of Interest")
+        roi_box = QWidget()
         roi_layout = QVBoxLayout()
-        roi_layout.setContentsMargins(12, 18, 12, 12)
+        roi_layout.setContentsMargins(0, 0, 0, 0)
         roi_layout.setSpacing(8)
 
         self.create_roi_button = QPushButton("Create / Edit ROI Rectangle")
@@ -149,14 +240,14 @@ class CiliaAssistantWidget(QWidget):
         roi_layout.addWidget(self.measure_whole_button)
 
         roi_box.setLayout(roi_layout)
-        layout.addWidget(roi_box)
+        content_layout.addWidget(CollapsiblePanel("Step 2. Region of Interest", roi_box, collapsed=False))
 
         # -------------------------
         # Analysis parameters
         # -------------------------
-        analysis_box = QGroupBox("3  Frequency Analysis")
+        analysis_box = QWidget()
         analysis_layout = QVBoxLayout()
-        analysis_layout.setContentsMargins(12, 18, 12, 12)
+        analysis_layout.setContentsMargins(0, 0, 0, 0)
         analysis_layout.setSpacing(8)
 
         self.min_hz_box = QDoubleSpinBox()
@@ -198,19 +289,21 @@ class CiliaAssistantWidget(QWidget):
         analysis_layout.addWidget(self.export_button)
 
         analysis_box.setLayout(analysis_layout)
-        layout.addWidget(analysis_box)
+        content_layout.addWidget(CollapsiblePanel("Step 3. Frequency Analysis", analysis_box, collapsed=False))
 
         # -------------------------
         # Plot section
         # -------------------------
-        plot_box = QGroupBox("4  Measurement Graph")
+        plot_box = QWidget()
         plot_layout = QVBoxLayout()
-        plot_layout.setContentsMargins(12, 18, 12, 12)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
         plot_layout.setSpacing(8)
 
-        self.figure = Figure(figsize=(5, 4))
+        self.figure = Figure(figsize=(5, 3))
         self.figure.patch.set_facecolor("#111827")
         self.canvas = FigureCanvas(self.figure)
+        self.canvas.setMinimumHeight(220)
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         plot_layout.addWidget(self.canvas)
 
         plot_button_row = QHBoxLayout()
@@ -233,14 +326,16 @@ class CiliaAssistantWidget(QWidget):
 
         plot_layout.addLayout(plot_button_row)
         plot_box.setLayout(plot_layout)
-        layout.addWidget(plot_box)
+        plot_panel = CollapsiblePanel("Step 4. Measurement Graph", plot_box, collapsed=False)
+        plot_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content_layout.addWidget(plot_panel, 1)
 
         # -------------------------
         # Log section
         # -------------------------
-        log_box = QGroupBox("5  Log")
+        log_box = QWidget()
         log_layout = QVBoxLayout()
-        log_layout.setContentsMargins(12, 18, 12, 12)
+        log_layout.setContentsMargins(0, 0, 0, 0)
         log_layout.setSpacing(8)
 
         self.clear_log_button = QPushButton("Clear Log")
@@ -255,10 +350,18 @@ class CiliaAssistantWidget(QWidget):
         self.output.setObjectName("runLog")
         self.output.setReadOnly(True)
         self.output.setPlaceholderText("Measurement messages, metadata, and QC notes will appear here.")
+        self.output.setMinimumHeight(140)
+        self.output.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         log_layout.addWidget(self.output)
 
         log_box.setLayout(log_layout)
-        layout.addWidget(log_box)
+        log_panel = CollapsiblePanel("Step 5. Log", log_box, collapsed=False)
+        log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content_layout.addWidget(log_panel, 1)
+
+        scroll_content.setLayout(content_layout)
+        scroll_area.setWidget(scroll_content)
+        layout.addWidget(scroll_area, 1)
 
         self.setLayout(layout)
         self._apply_ux_theme()
@@ -288,24 +391,55 @@ class CiliaAssistantWidget(QWidget):
                 padding: 0 0 4px 0;
             }
 
-            QGroupBox {
-                background: #1f2937;
-                border: 1px solid #374151;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 8px;
-                font-weight: 700;
-                color: #f9fafb;
+            QScrollArea#assistantScrollArea,
+            QWidget#assistantScrollContent {
+                background: transparent;
             }
 
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 12px;
-                padding: 3px 9px;
-                border-radius: 7px;
-                background: #334155;
-                color: #f8fafc;
+            QFrame#collapsibleBody {
+                background: #1a2130;
+                border: 1px solid #2d3748;
+                border-left: 4px solid #5e7892;
+                border-radius: 8px;
+            }
+
+            QToolButton#collapsibleToggle {
+                background: #101722;
+                color: #eef2f7;
+                border: 1px solid #6f8fae;
+                border-radius: 9px;
+                min-width: 22px;
+                max-width: 22px;
+                min-height: 22px;
+                max-height: 22px;
+                font-weight: 700;
+                padding: 0px;
+            }
+
+            QToolButton#collapsibleToggle:hover {
+                border-color: #9db6cf;
+                color: #f1f5f9;
+            }
+
+            QLabel#collapsibleStepBadge {
+                background: #40566e;
+                color: #f1f5f9;
+                border: 1px solid #6f8fae;
+                border-radius: 9px;
+                padding: 3px 8px;
+                font-size: 12px;
+                font-weight: 800;
+            }
+
+            QLabel#collapsibleTitle {
+                color: #eef2f7;
+                font-size: 13px;
+                font-weight: 800;
+                padding: 2px 2px;
+            }
+
+            QFrame#collapsibleHeaderLine {
+                color: #2d3748;
             }
 
             QPushButton {
@@ -375,6 +509,23 @@ class CiliaAssistantWidget(QWidget):
                 min-height: 120px;
                 padding: 8px;
                 font-family: monospace;
+            }
+
+            QScrollBar:vertical {
+                background: #111827;
+                width: 12px;
+                margin: 2px;
+            }
+
+            QScrollBar::handle:vertical {
+                background: #64748b;
+                border-radius: 5px;
+                min-height: 28px;
+            }
+
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0px;
             }
             """
         )
