@@ -1,7 +1,6 @@
 ## Demo
 
-[![Watch the demo](docs/ui.png)]
-(https://raw.githubusercontent.com/wulinteousa2-hash/napari-cilia-assistant/main/docs/ui.mp4)
+[![Watch the demo](docs/ui.png)](https://raw.githubusercontent.com/wulinteousa2-hash/napari-cilia-assistant/main/docs/ui.mp4)
 
 
 # napari-cilia-assistant
