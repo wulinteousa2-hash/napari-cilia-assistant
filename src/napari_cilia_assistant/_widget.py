@@ -695,6 +695,7 @@ class CiliaAssistantWidget(QWidget):
         axes.xaxis.label.set_size(9)
         axes.yaxis.label.set_size(9)
         axes.title.set_size(11)
+        axes.title.set_weight("bold")
         for spine in axes.spines.values():
             spine.set_color("#40546f")
         axes.grid(True, color="#263750", alpha=0.55, linewidth=0.7)
@@ -1029,7 +1030,13 @@ class CiliaAssistantWidget(QWidget):
         self._style_plot_axes(ax1)
         ax1.plot(time, signal, color="#60a5fa", linewidth=1.6)
         signal_label = "background-corrected signal" if self.last_background_signal is not None else "mean intensity"
-        ax1.set_title(f"{label}: {signal_label}", loc="left", pad=8)
+        ax1.set_title(
+            f"{label}: {signal_label}",
+            loc="left",
+            pad=8,
+            color="#f8fbff",
+            fontweight="bold",
+        )
         ax1.set_xlabel("Time (s)")
         ax1.set_ylabel("Intensity")
 
@@ -1072,7 +1079,13 @@ class CiliaAssistantWidget(QWidget):
             },
         )
         ax2.set_xlim(0, min(fft_result["effective_max_hz"] * 1.2, fps / 2.0))
-        ax2.set_title("FFT power spectrum", loc="left", pad=8)
+        ax2.set_title(
+            "FFT power spectrum",
+            loc="left",
+            pad=8,
+            color="#f8fbff",
+            fontweight="bold",
+        )
         ax2.set_xlabel("Frequency (Hz)")
         ax2.set_ylabel("Power")
 
