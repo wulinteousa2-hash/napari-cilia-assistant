@@ -394,13 +394,24 @@ class CiliaAssistantWidget(QWidget):
         log_layout.setContentsMargins(0, 0, 0, 0)
         log_layout.setSpacing(8)
 
+        log_button_row = QHBoxLayout()
+
+        self.copy_log_button = QPushButton("Copy Log")
+        self._style_button(self.copy_log_button, "secondary")
+        self.copy_log_button.setToolTip(
+            "Copy the log with the current video file name and path included."
+        )
+        self.copy_log_button.clicked.connect(self.copy_log)
+        log_button_row.addWidget(self.copy_log_button)
+
         self.clear_log_button = QPushButton("Clear Log")
         self._style_button(self.clear_log_button, "secondary")
         self.clear_log_button.setToolTip(
             "Clear previous messages before opening or measuring the next video."
         )
         self.clear_log_button.clicked.connect(self.clear_log)
-        log_layout.addWidget(self.clear_log_button)
+        log_button_row.addWidget(self.clear_log_button)
+        log_layout.addLayout(log_button_row)
 
         self.output = QTextEdit()
         self.output.setObjectName("runLog")
@@ -706,6 +717,40 @@ class CiliaAssistantWidget(QWidget):
     def log(self, text: str):
         self.output.append(text)
 
+    def _log_export_text(self) -> str:
+        lines: list[str] = ["Cilia Assistant Log"]
+
+        if self.video_path:
+            video_path = Path(self.video_path)
+            lines.extend(
+                [
+                    f"Current file name: {video_path.name}",
+                    f"Current file path: {video_path}",
+                ]
+            )
+        else:
+            lines.append("Current file name: not loaded")
+
+        if self.info:
+            fps = self.info.get("fps", "unknown")
+            frame_count = self.info.get("frame_count", "unknown")
+            duration = self.info.get("duration_sec", "unknown")
+            lines.extend(
+                [
+                    f"Metadata FPS: {fps}",
+                    f"Metadata frames: {frame_count}",
+                    f"Metadata duration_sec: {duration}",
+                ]
+            )
+
+        log_text = self.output.toPlainText().strip()
+        lines.extend(["", "Log:", log_text if log_text else "(empty)"])
+        return "\n".join(lines)
+
+    def copy_log(self):
+        QApplication.clipboard().setText(self._log_export_text())
+        self.log("Copied log to clipboard with video file information.")
+
     def clear_log(self):
         self.output.clear()
         self.log("Log cleared.")
@@ -753,6 +798,8 @@ class CiliaAssistantWidget(QWidget):
         )
 
         self.log("\nOpened AVI:")
+        self.log(f"  File name: {Path(path).name}")
+        self.log(f"  File path: {path}")
         for key, value in self.info.items():
             self.log(f"  {key}: {value}")
 
@@ -963,6 +1010,11 @@ class CiliaAssistantWidget(QWidget):
         self.last_peak_result = peak_result
 
         self.log("\nCBF measurement:")
+        if self.video_path:
+            self.log(f"  File name: {Path(self.video_path).name}")
+            self.log(f"  File path: {self.video_path}")
+        else:
+            self.log("  File name: not loaded")
         self.log(f"  Region: {label}")
 
         if roi is None:
@@ -1165,6 +1217,9 @@ class CiliaAssistantWidget(QWidget):
         )
 
         self.log("\nCreated kymograph layer.")
+        if self.video_path:
+            self.log(f"  File name: {Path(self.video_path).name}")
+            self.log(f"  File path: {self.video_path}")
         self.log("  Kymograph shape: T x X-position")
         self.log("  Each row is one video frame.")
         self.log("  Repeated bands/waves indicate rhythmic cilia motion.")
@@ -1223,5 +1278,8 @@ class CiliaAssistantWidget(QWidget):
         )
 
         self.log("\nExported measurement:")
+        if self.video_path:
+            self.log(f"  File name: {Path(self.video_path).name}")
+            self.log(f"  File path: {self.video_path}")
         self.log(f"  Signal CSV: {signal_path}")
         self.log(f"  FFT CSV: {fft_path}")
