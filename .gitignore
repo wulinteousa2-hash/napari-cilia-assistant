@@ -1,66 +1,24 @@
-# Python
+# Python cache files
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.so
+*$py.class
+
+# Python build / package metadata
+*.egg-info/
+build/
+dist/
 
 # Virtual environments
 .venv/
 venv/
 env/
-napari-env/
-conda-meta/
 
-# Build / packaging
-build/
-dist/
-*.egg-info/
-.eggs/
-*.whl
-
-# Test / coverage
+# Test / cache folders
 .pytest_cache/
-.coverage
-htmlcov/
-.tox/
 .mypy_cache/
 .ruff_cache/
 
-# IDE / editor
+# OS/editor files
+.DS_Store
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Napari / local runtime
-*.log
-logs/
-.cache/
-napari.log
-
-# Data / videos / outputs
-*.avi
-*.mp4
-!docs/ui.mp4
-*.mov
-*.tif
-*.tiff
-*.nd2
-*.czi
-*.lif
-*.zarr/
-*.ome.zarr/
-data/
-datasets/
-outputs/
-results/
-
-# Local config / secrets
-.env
-.env.*
-secrets.*
