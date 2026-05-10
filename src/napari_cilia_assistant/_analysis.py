@@ -2,60 +2,24 @@ from __future__ import annotations
 
 """Core numerical routines for napari-cilia-assistant.
 
-Scientific scope
-----------------
-The functions in this module quantify rhythmic motion in high-speed cilia videos.
-They are intentionally conservative and transparent: each step maps to a common
-manual or computational ciliary beat frequency (CBF) workflow.
-
-The analysis is based on three related measurements:
-
-1. ROI mean-intensity signal
-   A user-selected region of interest (ROI) is reduced to a 1-D time series by
-   averaging pixel intensity within the ROI for every frame. Beating cilia cause
-   periodic local intensity fluctuations as cilia move through the optical path.
-
-2. FFT dominant-frequency estimate
-   The detrended ROI signal is transformed into the frequency domain. The largest
-   spectral peak within the user-defined physiological search range is reported
-   as the automated CBF estimate.
-
-3. Peak-interval estimate and kymograph
-   The peak-interval method is an independent, semi-manual sanity check. The
-   kymograph is a visual audit layer: each row is one frame and each column is
-   position along a line across the moving cilia edge.
-
-Important limitation
---------------------
-This module estimates frequency, not full ciliary beat pattern or waveform. A
-normal-looking CBF can still coexist with abnormal waveform. For publication or
-collaborative reporting, the numerical CBF should therefore be interpreted with
-ROI placement, video quality, frame rate, temperature, and visual/kymograph review.
+This module keeps the scientific computation separate from the Qt/napari UI.
+The routines are intentionally transparent and conservative: they expose raw
+signals, spectra, maps, and quality metrics so users can review the measurement
+rather than relying on a single black-box number.
 """
 
 from contextlib import suppress
 
 import cv2
 import numpy as np
-from scipy.signal import detrend, find_peaks
+from scipy.signal import detrend, find_peaks, periodogram, welch
+
+
+ROI = tuple[int, int, int, int]  # x, y, width, height
 
 
 def read_avi_info(path: str) -> dict:
-    """Read AVI metadata using OpenCV without loading the full movie.
-
-    Why this exists
-    ---------------
-    CBF is measured in Hz, so the video frame rate is part of the scientific
-    measurement. Reading and displaying FPS, frame count, duration, size, and
-    codec gives the user a quick quality-control checkpoint before analysis.
-
-    Notes
-    -----
-    OpenCV metadata can be wrong for some legacy AVI encoders. The UI therefore
-    lets the user manually correct FPS after loading.
-    """
     cap = cv2.VideoCapture(path)
-
     try:
         if not cap.isOpened():
             raise FileNotFoundError(f"Could not open video: {path}")
@@ -65,7 +29,6 @@ def read_avi_info(path: str) -> dict:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
-
         codec = "".join(chr((fourcc_int >> 8 * i) & 0xFF) for i in range(4))
         codec = codec if codec.strip("\x00 ") else "unknown"
 
@@ -78,57 +41,28 @@ def read_avi_info(path: str) -> dict:
             "codec": codec,
         }
     finally:
-        # Always release the handle. This matters on Windows, where an open
-        # VideoCapture object can keep the AVI locked after a failed read.
         with suppress(Exception):
             cap.release()
 
 
 def load_avi_as_stack(path: str, max_frames: int | None = None) -> np.ndarray:
-    """Load an AVI video as a grayscale NumPy stack with shape ``T, Y, X``.
-
-    Why grayscale
-    -------------
-    Most bright-field/DIC cilia videos encode motion as intensity changes, not as
-    color information. Converting to grayscale gives a simple, reproducible input
-    for ROI intensity, FFT, peak detection, and kymograph generation.
-
-    Parameters
-    ----------
-    path:
-        AVI file path.
-    max_frames:
-        Optional safety limit for long videos. ``None`` loads all frames.
-
-    Returns
-    -------
-    stack:
-        Three-dimensional array ordered as time, y, x.
-    """
     cap = cv2.VideoCapture(path)
-
     try:
         if not cap.isOpened():
             raise FileNotFoundError(f"Could not open video: {path}")
 
         frames: list[np.ndarray] = []
         index = 0
-
         while True:
             if max_frames is not None and index >= max_frames:
                 break
-
             ok, frame = cap.read()
             if not ok:
                 break
-
-            # OpenCV returns color AVI frames as BGR. For CBF, color channels are
-            # not needed; a single intensity image avoids channel-dependent bias.
             if frame.ndim == 3:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             else:
                 gray = frame
-
             frames.append(gray)
             index += 1
     finally:
@@ -139,37 +73,23 @@ def load_avi_as_stack(path: str, max_frames: int | None = None) -> np.ndarray:
         raise ValueError("No frames were loaded from the AVI file.")
 
     stack = np.stack(frames, axis=0)
-
     if stack.ndim != 3:
         raise ValueError(f"Expected stack shape T,Y,X, got {stack.shape}")
-
     return stack
 
 
-def roi_from_shape_data(
-    shape_data: np.ndarray,
-    image_shape: tuple[int, int],
-) -> tuple[int, int, int, int]:
-    """Convert napari Shapes vertices into a bounded rectangular ROI.
+def summarize_stack(stack: np.ndarray) -> dict:
+    return {
+        "shape": tuple(stack.shape),
+        "dtype": str(stack.dtype),
+        "min": float(np.min(stack)),
+        "max": float(np.max(stack)),
+        "mean": float(np.mean(stack)),
+    }
 
-    Napari stores shape vertices in ``Y, X`` order. Many image-processing
-    functions use ``x, y, width, height``. This conversion is deliberately kept in
-    one place so downstream analysis receives a consistent ROI representation.
 
-    Parameters
-    ----------
-    shape_data:
-        Napari shape vertices, usually an ``N x 2`` array.
-    image_shape:
-        Image shape as ``Y, X``.
-
-    Returns
-    -------
-    roi:
-        ``x, y, width, height`` clipped to the image bounds.
-    """
+def roi_from_shape_data(shape_data: np.ndarray, image_shape: tuple[int, int]) -> ROI:
     data = np.asarray(shape_data)
-
     if data.ndim != 2 or data.shape[1] < 2:
         raise ValueError(f"Invalid shape data: {data.shape}")
 
@@ -182,9 +102,6 @@ def roi_from_shape_data(
     x1 = int(np.ceil(np.max(x_coords)))
 
     img_y, img_x = image_shape
-
-    # Clip to valid image bounds so ROI edits slightly outside the image do not
-    # crash measurement. The minimum end coordinate preserves non-empty slices.
     y0 = max(0, min(y0, img_y - 1))
     y1 = max(1, min(y1, img_y))
     x0 = max(0, min(x0, img_x - 1))
@@ -192,116 +109,88 @@ def roi_from_shape_data(
 
     width = x1 - x0
     height = y1 - y0
-
     if width <= 1 or height <= 1:
         raise ValueError("ROI is too small. Draw a larger rectangle over the moving cilia.")
-
     return x0, y0, width, height
 
 
-def crop_stack_to_roi(
-    stack: np.ndarray,
-    roi: tuple[int, int, int, int] | None = None,
-) -> np.ndarray:
-    """Return the full stack or an ``x, y, width, height`` crop.
-
-    Keeping this crop as a view rather than a copy makes repeated ROI analysis
-    lightweight for typical AVI stacks.
-    """
+def crop_stack_to_roi(stack: np.ndarray, roi: ROI | None = None) -> np.ndarray:
     if roi is None:
         return stack
-
     x, y, w, h = roi
-    return stack[:, y:y + h, x:x + w]
+    return stack[:, y : y + h, x : x + w]
 
 
-def roi_mean_signal(
-    stack: np.ndarray,
-    roi: tuple[int, int, int, int] | None = None,
-) -> np.ndarray:
-    """Compute mean ROI intensity for each video frame.
-
-    Why mean intensity
-    ------------------
-    The mean intensity trace is a simple photoelectronic-style signal. It captures
-    periodic brightness changes produced by cilia moving through the selected
-    region, while averaging reduces single-pixel noise.
-
-    Returns
-    -------
-    signal:
-        One-dimensional array with length equal to the number of frames.
-    """
+def roi_mean_signal(stack: np.ndarray, roi: ROI | None = None) -> np.ndarray:
     cropped = crop_stack_to_roi(stack, roi)
     return cropped.mean(axis=(1, 2)).astype(float)
 
 
-def estimate_cbf_fft(
+def _effective_frequency_range(fps: float, min_hz: float, max_hz: float) -> tuple[float, float, float]:
+    if fps <= 0:
+        raise ValueError("FPS must be greater than zero.")
+    nyquist_hz = fps / 2.0
+    effective_max_hz = min(max_hz, nyquist_hz * 0.95)
+    if min_hz >= effective_max_hz:
+        raise ValueError(
+            f"Invalid frequency range. With FPS={fps:.3f}, max useful frequency is ~{nyquist_hz:.3f} Hz."
+        )
+    return min_hz, effective_max_hz, nyquist_hz
+
+
+def _prepare_signal(signal: np.ndarray) -> np.ndarray:
+    signal = np.asarray(signal, dtype=float)
+    if signal.ndim != 1:
+        raise ValueError("Expected a one-dimensional signal.")
+    if signal.size < 16:
+        raise ValueError("Signal is too short for frequency analysis.")
+    clean = detrend(signal)
+    clean = clean - np.mean(clean)
+    if float(np.std(clean)) <= 1e-12:
+        raise ValueError("Signal has no measurable intensity variation.")
+    return clean
+
+
+def estimate_cbf_frequency(
     signal: np.ndarray,
     fps: float,
     min_hz: float = 3.0,
     max_hz: float = 40.0,
+    method: str = "fft",
 ) -> dict:
-    """Estimate ciliary beat frequency from the dominant FFT peak.
+    """Estimate CBF from a 1-D time signal using FFT, periodogram, or Welch PSD."""
+    min_hz, effective_max_hz, nyquist_hz = _effective_frequency_range(fps, min_hz, max_hz)
+    clean = _prepare_signal(signal)
+    method_key = method.strip().lower()
 
-    Method rationale
-    ----------------
-    A rhythmic cilia signal should contain repeated intensity oscillations. The
-    FFT converts those oscillations into power versus frequency. The reported CBF
-    is the strongest frequency peak within the user-defined search range.
+    if method_key == "fft":
+        windowed = clean * np.hanning(clean.size)
+        freqs = np.fft.rfftfreq(windowed.size, d=1.0 / fps)
+        power = np.abs(np.fft.rfft(windowed)) ** 2
+        method_name = "FFT dominant frequency"
+    elif method_key == "periodogram":
+        freqs, power = periodogram(clean, fs=fps, window="hann", detrend=False, scaling="spectrum")
+        method_name = "Periodogram dominant frequency"
+    elif method_key == "welch":
+        nperseg = min(clean.size, max(16, int(round(fps))))
+        freqs, power = welch(clean, fs=fps, window="hann", nperseg=nperseg, detrend=False, scaling="spectrum")
+        method_name = "Welch PSD dominant frequency"
+    else:
+        raise ValueError(f"Unsupported frequency method: {method}. Use FFT, Welch, or Periodogram.")
 
-    The preprocessing is intentionally modest:
-    * detrending suppresses slow photobleaching, drift, or gradual focus change;
-    * mean-centering removes the DC component;
-    * a Hanning window reduces spectral leakage at the video boundaries.
-
-    The function returns the full spectrum so reviewers/users can inspect whether
-    the selected frequency is a sharp biological rhythm or a weak/noisy maximum.
-    """
-    if fps <= 0:
-        raise ValueError("FPS must be greater than zero.")
-
-    if len(signal) < 16:
-        raise ValueError("Signal is too short for frequency analysis.")
-
-    nyquist_hz = fps / 2.0
-    effective_max_hz = min(max_hz, nyquist_hz * 0.95)
-
-    if min_hz >= effective_max_hz:
-        raise ValueError(
-            f"Invalid frequency range. With FPS={fps}, max useful frequency is ~{nyquist_hz:.2f} Hz."
-        )
-
-    clean = detrend(signal)
-    clean = clean - np.mean(clean)
-
-    signal_std = float(np.std(clean))
-    if signal_std <= 1e-12:
-        raise ValueError("ROI signal has no intensity variation.")
-
-    clean = clean * np.hanning(len(clean))
-
-    freqs = np.fft.rfftfreq(len(clean), d=1.0 / fps)
-    power = np.abs(np.fft.rfft(clean)) ** 2
-
-    # Restrict to the expected biological/experimental range. This avoids
-    # reporting low-frequency drift or high-frequency sensor noise as CBF.
     valid = (freqs >= min_hz) & (freqs <= effective_max_hz)
-
     if not np.any(valid):
         raise ValueError("No valid frequency bins in selected range.")
 
     valid_freqs = freqs[valid]
     valid_power = power[valid]
-
     peak_index = int(np.argmax(valid_power))
     cbf_hz = float(valid_freqs[peak_index])
-
     peak_power = float(valid_power[peak_index])
     background_power = float(np.median(valid_power) + 1e-12)
 
     return {
-        "method": "FFT dominant frequency",
+        "method": method_name,
         "cbf_hz": cbf_hz,
         "peak_to_background": peak_power / background_power,
         "freqs": freqs,
@@ -311,41 +200,29 @@ def estimate_cbf_fft(
     }
 
 
-def estimate_cbf_peaks(
-    signal: np.ndarray,
-    fps: float,
-    min_hz: float = 3.0,
-    max_hz: float = 40.0,
-) -> dict:
-    """Estimate CBF from peak-to-peak spacing in the ROI intensity signal.
+def estimate_cbf_fft(signal: np.ndarray, fps: float, min_hz: float = 3.0, max_hz: float = 40.0) -> dict:
+    return estimate_cbf_frequency(signal, fps=fps, min_hz=min_hz, max_hz=max_hz, method="fft")
 
-    This is not intended to replace the FFT estimate. It is an independent sanity
-    check that resembles manual beat counting: repeated intensity maxima are
-    treated as repeated beat cycles, and the median peak interval is converted to
-    Hz. Disagreement between FFT and peak-interval values should trigger visual
-    review of the ROI, kymograph, and raw movie.
-    """
+
+def estimate_cbf_peaks(signal: np.ndarray, fps: float, min_hz: float = 3.0, max_hz: float = 40.0) -> dict:
     if fps <= 0:
         raise ValueError("FPS must be greater than zero.")
-
     if len(signal) < 16:
         raise ValueError("Signal is too short for peak analysis.")
 
-    nyquist_hz = fps / 2.0
-    effective_max_hz = min(max_hz, nyquist_hz * 0.95)
-
-    if min_hz >= effective_max_hz:
+    try:
+        min_hz, effective_max_hz, nyquist_hz = _effective_frequency_range(fps, min_hz, max_hz)
+    except ValueError as exc:
         return {
             "method": "Peak interval",
             "cbf_hz": np.nan,
             "n_peaks": 0,
-            "note": f"Invalid frequency range for FPS={fps:.3f}; Nyquist is {nyquist_hz:.3f} Hz.",
+            "note": str(exc),
             "peaks": np.array([], dtype=int),
         }
 
-    clean = detrend(signal)
+    clean = detrend(np.asarray(signal, dtype=float))
     clean = clean - np.mean(clean)
-
     std = float(np.std(clean))
     if std <= 1e-12:
         return {
@@ -356,16 +233,8 @@ def estimate_cbf_peaks(
             "peaks": np.array([], dtype=int),
         }
 
-    # Enforce a minimum distance between peaks so a single beat is not counted
-    # multiple times because of noise or substructure in the intensity trace.
     min_distance_frames = max(1, int(fps / effective_max_hz))
-    prominence = std * 0.3
-
-    peaks, _props = find_peaks(
-        clean,
-        distance=min_distance_frames,
-        prominence=prominence,
-    )
+    peaks, _props = find_peaks(clean, distance=min_distance_frames, prominence=std * 0.3)
 
     if len(peaks) < 2:
         return {
@@ -378,9 +247,7 @@ def estimate_cbf_peaks(
 
     intervals_sec = np.diff(peaks) / fps
     freqs = 1.0 / intervals_sec
-
     valid = (freqs >= min_hz) & (freqs <= effective_max_hz)
-
     if not np.any(valid):
         return {
             "method": "Peak interval",
@@ -390,50 +257,207 @@ def estimate_cbf_peaks(
             "peaks": peaks,
         }
 
-    cbf_hz = float(np.median(freqs[valid]))
-
     return {
         "method": "Peak interval",
-        "cbf_hz": cbf_hz,
+        "cbf_hz": float(np.median(freqs[valid])),
         "n_peaks": int(len(peaks)),
         "note": "Median peak-to-peak frequency.",
         "peaks": peaks,
     }
 
 
-def make_kymograph(
-    stack: np.ndarray,
-    roi: tuple[int, int, int, int] | None = None,
-) -> np.ndarray:
-    """Create a horizontal-line kymograph from the stack.
-
-    Output shape is ``T, X``. Each row is one time point, and each column is a
-    spatial position along the middle row of the selected ROI. Repeating bands or
-    waves in the kymograph provide a visual audit of periodic ciliary motion.
-
-    Limitation
-    ----------
-    This is a deliberately simple center-line kymograph. For publication-grade
-    waveform analysis, users should ensure that the ROI line crosses the moving
-    cilia edge and should compare with raw video playback.
-    """
+def make_kymograph(stack: np.ndarray, roi: ROI | None = None) -> np.ndarray:
     if roi is None:
         _, y_size, _x_size = stack.shape
         y_mid = y_size // 2
         return stack[:, y_mid, :]
-
     x, y, w, h = roi
     y_mid = y + h // 2
+    return stack[:, y_mid, x : x + w]
 
-    return stack[:, y_mid, x:x + w]
+
+def _block_mean_stack(stack: np.ndarray, tile_size: int) -> np.ndarray:
+    """Downsample T,Y,X by block averaging in Y/X only."""
+    if tile_size <= 1:
+        return stack.astype(float, copy=False)
+    t, y, x = stack.shape
+    y_trim = (y // tile_size) * tile_size
+    x_trim = (x // tile_size) * tile_size
+    if y_trim < tile_size or x_trim < tile_size:
+        raise ValueError("Tile size is too large for the selected region.")
+    cropped = stack[:, :y_trim, :x_trim].astype(float, copy=False)
+    return cropped.reshape(t, y_trim // tile_size, tile_size, x_trim // tile_size, tile_size).mean(axis=(2, 4))
 
 
-def summarize_stack(stack: np.ndarray) -> dict:
-    """Return basic stack statistics for UI logging and reproducibility."""
+def compute_cbf_heatmap(
+    stack: np.ndarray,
+    fps: float,
+    min_hz: float = 3.0,
+    max_hz: float = 40.0,
+    method: str = "fft",
+    tile_size: int = 8,
+    roi: ROI | None = None,
+) -> dict:
+    """Compute dominant-frequency and peak-strength maps from video blocks.
+
+    The returned maps are in tile coordinates. In napari, display them with
+    ``scale=(tile_size, tile_size)`` and ``translate=(roi_y, roi_x)`` when ROI is used.
+    """
+    region = crop_stack_to_roi(stack, roi)
+    block = _block_mean_stack(region, max(1, int(tile_size)))
+    t, out_y, out_x = block.shape
+    if t < 16:
+        raise ValueError("Video is too short for heatmap frequency analysis.")
+
+    cbf_map = np.full((out_y, out_x), np.nan, dtype=np.float32)
+    strength_map = np.full((out_y, out_x), np.nan, dtype=np.float32)
+
+    for yy in range(out_y):
+        for xx in range(out_x):
+            signal = block[:, yy, xx]
+            try:
+                result = estimate_cbf_frequency(signal, fps=fps, min_hz=min_hz, max_hz=max_hz, method=method)
+            except Exception:
+                continue
+            cbf_map[yy, xx] = result["cbf_hz"]
+            strength_map[yy, xx] = result["peak_to_background"]
+
     return {
-        "shape": tuple(stack.shape),
-        "dtype": str(stack.dtype),
-        "min": float(np.min(stack)),
-        "max": float(np.max(stack)),
-        "mean": float(np.mean(stack)),
+        "cbf_map": cbf_map,
+        "strength_map": strength_map,
+        "tile_size": max(1, int(tile_size)),
+        "roi": roi,
+        "method": method,
+    }
+
+
+def compute_motion_activity_map(
+    stack: np.ndarray,
+    method: str = "temporal_sd",
+    fps: float | None = None,
+    min_hz: float = 3.0,
+    max_hz: float = 40.0,
+    tile_size: int = 4,
+    roi: ROI | None = None,
+) -> dict:
+    """Compute simple maps that show where video motion/activity exists."""
+    region = crop_stack_to_roi(stack, roi).astype(float, copy=False)
+    method_key = method.strip().lower().replace(" ", "_").replace("-", "_")
+    tile_size = max(1, int(tile_size))
+
+    if method_key in {"temporal_sd", "temporal_std", "std"}:
+        data = _block_mean_stack(region, tile_size)
+        activity = np.std(data, axis=0)
+        label = "Temporal SD"
+    elif method_key in {"frame_difference", "frame_difference_mean", "diff"}:
+        data = _block_mean_stack(region, tile_size)
+        activity = np.mean(np.abs(np.diff(data, axis=0)), axis=0)
+        label = "Mean frame difference"
+    elif method_key in {"max_min", "range"}:
+        data = _block_mean_stack(region, tile_size)
+        activity = np.max(data, axis=0) - np.min(data, axis=0)
+        label = "Max-min intensity range"
+    elif method_key in {"band_limited_fft_power", "band_limited_power", "fft_power"}:
+        if fps is None or fps <= 0:
+            raise ValueError("FPS is required for band-limited FFT power.")
+        data = _block_mean_stack(region, tile_size)
+        clean = detrend(data, axis=0)
+        clean = clean - np.mean(clean, axis=0, keepdims=True)
+        freqs = np.fft.rfftfreq(clean.shape[0], d=1.0 / fps)
+        power = np.abs(np.fft.rfft(clean * np.hanning(clean.shape[0])[:, None, None], axis=0)) ** 2
+        _min_hz, effective_max_hz, _nyquist = _effective_frequency_range(fps, min_hz, max_hz)
+        valid = (freqs >= min_hz) & (freqs <= effective_max_hz)
+        if not np.any(valid):
+            raise ValueError("No valid FFT bins in selected range.")
+        activity = np.sum(power[valid, :, :], axis=0)
+        label = "Band-limited FFT power"
+    else:
+        raise ValueError(f"Unsupported activity method: {method}")
+
+    return {
+        "activity_map": activity.astype(np.float32),
+        "tile_size": tile_size,
+        "roi": roi,
+        "method": label,
+    }
+
+
+def _normalize_uint8(frame: np.ndarray) -> np.ndarray:
+    frame = np.asarray(frame, dtype=np.float32)
+    mn = float(np.min(frame))
+    mx = float(np.max(frame))
+    if mx <= mn:
+        return np.zeros_like(frame, dtype=np.uint8)
+    return np.clip((frame - mn) / (mx - mn) * 255.0, 0, 255).astype(np.uint8)
+
+
+def compute_optical_flow_maps(
+    stack: np.ndarray,
+    roi: ROI | None = None,
+    frame_step: int = 1,
+    max_pairs: int = 100,
+) -> dict:
+    """Compute average Farneback optical-flow descriptors.
+
+    These maps describe apparent image motion. They should be treated as
+    exploratory motion-field descriptors, not clinical beat-pattern classes.
+    """
+    region = crop_stack_to_roi(stack, roi)
+    frame_step = max(1, int(frame_step))
+    max_pairs = max(1, int(max_pairs))
+
+    indices = list(range(0, region.shape[0] - frame_step, frame_step))[:max_pairs]
+    if not indices:
+        raise ValueError("Not enough frames for optical-flow analysis.")
+
+    sum_u = None
+    sum_v = None
+    sum_mag = None
+    n = 0
+
+    for i in indices:
+        prev = _normalize_uint8(region[i])
+        nxt = _normalize_uint8(region[i + frame_step])
+        flow = cv2.calcOpticalFlowFarneback(
+            prev,
+            nxt,
+            None,
+            pyr_scale=0.5,
+            levels=3,
+            winsize=15,
+            iterations=3,
+            poly_n=5,
+            poly_sigma=1.2,
+            flags=0,
+        )
+        u = flow[..., 0]
+        v = flow[..., 1]
+        mag = np.sqrt(u * u + v * v)
+        if sum_u is None:
+            sum_u = np.zeros_like(u, dtype=np.float64)
+            sum_v = np.zeros_like(v, dtype=np.float64)
+            sum_mag = np.zeros_like(mag, dtype=np.float64)
+        sum_u += u
+        sum_v += v
+        sum_mag += mag
+        n += 1
+
+    mean_u = sum_u / n
+    mean_v = sum_v / n
+    mean_mag = sum_mag / n
+    direction = np.arctan2(mean_v, mean_u)
+
+    du_dy, du_dx = np.gradient(mean_u)
+    dv_dy, dv_dx = np.gradient(mean_v)
+    curl = dv_dx - du_dy
+    deformation = np.sqrt((du_dx - dv_dy) ** 2 + (du_dy + dv_dx) ** 2)
+
+    return {
+        "magnitude": mean_mag.astype(np.float32),
+        "direction": direction.astype(np.float32),
+        "curl": curl.astype(np.float32),
+        "deformation": deformation.astype(np.float32),
+        "roi": roi,
+        "frame_step": frame_step,
+        "n_pairs": n,
     }

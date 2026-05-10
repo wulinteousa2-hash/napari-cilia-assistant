@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-"""napari Qt widget for ciliary beat frequency analysis.
+"""Main napari Qt widget for ciliary beat-frequency and motion analysis.
 
-The widget is intentionally workflow-oriented rather than fully automatic:
-users open a high-speed AVI, confirm/adjust FPS, define an ROI over visibly
-moving cilia, then compare FFT-derived CBF with a peak-interval sanity check
-and a kymograph audit layer. This keeps the analysis transparent enough for
-collaborative review and methods documentation.
+The UI is intentionally split into five workflow steps. Step 3 contains analysis
+sub-tabs so users can choose the right level of analysis without overcrowding
+the standard ROI CBF workflow.
 """
 
 from pathlib import Path
@@ -14,11 +12,11 @@ from pathlib import Path
 import numpy as np
 
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QImage, QPixmap
 from qtpy.QtWidgets import (
     QApplication,
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
     QPushButton,
     QLabel,
     QFileDialog,
@@ -26,11 +24,11 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QTextEdit,
     QCheckBox,
-    QHBoxLayout,
     QFrame,
     QScrollArea,
     QSizePolicy,
     QToolButton,
+    QTabWidget,
 )
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -42,24 +40,19 @@ from ._analysis import (
     summarize_stack,
     roi_from_shape_data,
     roi_mean_signal,
-    estimate_cbf_fft,
+    estimate_cbf_frequency,
     estimate_cbf_peaks,
     make_kymograph,
+    compute_cbf_heatmap,
+    compute_motion_activity_map,
+    compute_optical_flow_maps,
 )
+from .tabs import RoiFrequencyTab, CbfHeatmapTab, MotionActivityTab, AdvancedFlowTab
 
 
 class CollapsiblePanel(QWidget):
-    """Compact section panel matching the other napari assistant tools."""
-
-    def __init__(
-        self,
-        title: str,
-        content: QWidget,
-        collapsed: bool = False,
-        parent: QWidget | None = None,
-    ) -> None:
+    def __init__(self, title: str, content: QWidget, collapsed: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-
         self.content = content
         step_text, title_text = self._split_title(title)
 
@@ -105,16 +98,13 @@ class CollapsiblePanel(QWidget):
         layout.addLayout(header_layout)
         layout.addWidget(self.body_frame)
         self.setLayout(layout)
-
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._on_toggled(collapsed)
 
     def _split_title(self, title: str) -> tuple[str, str]:
-        normalized = title.strip()
-        head, separator, tail = normalized.partition(".")
+        head, separator, tail = title.strip().partition(".")
         if separator and head.strip() and tail.strip():
             return head.strip(), tail.strip()
-        return "", normalized
+        return "", title.strip()
 
     def _on_toggled(self, checked: bool) -> None:
         self.toggle_button.setText("+" if checked else "−")
@@ -126,7 +116,7 @@ class CiliaAssistantWidget(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
         self.setObjectName("ciliaAssistant")
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(380)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.viewer = napari_viewer
@@ -142,40 +132,14 @@ class CiliaAssistantWidget(QWidget):
         self.last_signal: np.ndarray | None = None
         self.last_raw_signal: np.ndarray | None = None
         self.last_background_signal: np.ndarray | None = None
-        self.last_fft_result: dict | None = None
+        self.last_frequency_result: dict | None = None
         self.last_peak_result: dict | None = None
+        self.last_map_result: dict | None = None
 
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
-
-        header_frame = QFrame()
-        header_frame.setObjectName("assistantHeader")
-        header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(12, 10, 12, 10)
-        header_layout.setSpacing(12)
-
-        self.logo = QLabel("CBF")
-        self.logo.setObjectName("appLogo")
-        self.logo.setAlignment(Qt.AlignCenter)
-        header_layout.addWidget(self.logo)
-
-        title_column = QVBoxLayout()
-        title_column.setContentsMargins(0, 0, 0, 0)
-        title_column.setSpacing(2)
-
-        self.title = QLabel("Cilia Assistant")
-        self.title.setObjectName("appTitle")
-        title_column.addWidget(self.title)
-
-        self.subtitle = QLabel("ROI-based beat-frequency measurement for cilia videos")
-        self.subtitle.setObjectName("appSubtitle")
-        self.subtitle.setWordWrap(True)
-        title_column.addWidget(self.subtitle)
-
-        header_layout.addLayout(title_column, 1)
-        header_frame.setLayout(header_layout)
-        layout.addWidget(header_frame)
+        layout.addWidget(self._build_header())
 
         scroll_area = QScrollArea()
         scroll_area.setObjectName("assistantScrollArea")
@@ -190,25 +154,61 @@ class CiliaAssistantWidget(QWidget):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(8)
 
-        # -------------------------
-        # Results section
-        # -------------------------
+        content_layout.addWidget(CollapsiblePanel("Results. Key Measurements", self._build_results_box(), collapsed=False))
+        content_layout.addWidget(CollapsiblePanel("Step 1. Input", self._build_input_box(), collapsed=False))
+        content_layout.addWidget(CollapsiblePanel("Step 2. Region of Interest", self._build_roi_box(), collapsed=False))
+        content_layout.addWidget(CollapsiblePanel("Step 3. Analysis", self._build_analysis_tabs(), collapsed=False))
+        content_layout.addWidget(CollapsiblePanel("Step 4. Results / Graphs", self._build_plot_box(), collapsed=False), 1)
+        content_layout.addWidget(CollapsiblePanel("Step 5. Export & Log", self._build_export_log_box(), collapsed=True), 1)
+
+        scroll_content.setLayout(content_layout)
+        scroll_area.setWidget(scroll_content)
+        layout.addWidget(scroll_area, 1)
+        self.setLayout(layout)
+        self._apply_ux_theme()
+
+    # -------------------------
+    # UI builders
+    # -------------------------
+    def _build_header(self) -> QWidget:
+        header_frame = QFrame()
+        header_frame.setObjectName("assistantHeader")
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(12, 10, 12, 10)
+        header_layout.setSpacing(12)
+
+        logo = QLabel("CBF")
+        logo.setObjectName("appLogo")
+        logo.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(logo)
+
+        title_column = QVBoxLayout()
+        title_column.setContentsMargins(0, 0, 0, 0)
+        title_column.setSpacing(2)
+        title = QLabel("Cilia Assistant")
+        title.setObjectName("appTitle")
+        title_column.addWidget(title)
+        subtitle = QLabel("ROI CBF, spatial heatmaps, activity maps, and exploratory flow analysis")
+        subtitle.setObjectName("appSubtitle")
+        subtitle.setWordWrap(True)
+        title_column.addWidget(subtitle)
+        header_layout.addLayout(title_column, 1)
+        header_frame.setLayout(header_layout)
+        return header_frame
+
+    def _build_results_box(self) -> QWidget:
         results_box = QWidget()
         results_layout = QHBoxLayout()
         results_layout.setContentsMargins(0, 0, 0, 0)
         results_layout.setSpacing(8)
-
-        self.fft_result_card = self._build_result_card("FFT CBF", "—", "Primary estimate")
+        self.frequency_result_card = self._build_result_card("Frequency CBF", "—", "Primary estimate")
         self.peak_result_card = self._build_result_card("Peak CBF", "—", "Independent check")
-        results_layout.addWidget(self.fft_result_card)
+        results_layout.addWidget(self.frequency_result_card)
         results_layout.addWidget(self.peak_result_card)
         results_box.setLayout(results_layout)
+        return results_box
 
-        content_layout.addWidget(CollapsiblePanel("Results. Key Measurements", results_box, collapsed=False))
-
-        # -------------------------
-        # Input section
-        # -------------------------
+    def _build_input_box(self) -> QWidget:
         input_box = QWidget()
         input_layout = QVBoxLayout()
         input_layout.setContentsMargins(0, 0, 0, 0)
@@ -216,9 +216,7 @@ class CiliaAssistantWidget(QWidget):
 
         self.open_button = QPushButton("Open AVI")
         self._style_button(self.open_button, "primary")
-        self.open_button.setToolTip(
-            "Load a high-speed AVI and inspect metadata before measuring CBF."
-        )
+        self.open_button.setToolTip("Load a high-speed AVI and inspect metadata before analysis.")
         self.open_button.clicked.connect(self.open_avi)
         input_layout.addWidget(self.open_button)
 
@@ -227,29 +225,20 @@ class CiliaAssistantWidget(QWidget):
         self.fps_box.setDecimals(3)
         self.fps_box.setValue(300.0)
         self.fps_box.setPrefix("FPS: ")
-        self.fps_box.setToolTip(
-            "Frame rate is required to convert frame intervals or FFT bins into Hz. "
-            "Correct this manually if AVI metadata are wrong."
-        )
-        self.fps_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.fps_box.setToolTip("Correct this manually if AVI metadata are wrong.")
         input_layout.addWidget(self.fps_box)
 
         self.max_frames_box = QSpinBox()
         self.max_frames_box.setRange(0, 1000000)
         self.max_frames_box.setValue(1000)
         self.max_frames_box.setPrefix("Max frames, 0=all: ")
-        self.max_frames_box.setToolTip(
-            "Limits loading for very long videos. Use 0 to load the entire AVI."
-        )
-        self.max_frames_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.max_frames_box.setToolTip("Use 0 to load the entire AVI. Start with a limit for very long files.")
         input_layout.addWidget(self.max_frames_box)
 
         input_box.setLayout(input_layout)
-        content_layout.addWidget(CollapsiblePanel("Step 1. Input", input_box, collapsed=False))
+        return input_box
 
-        # -------------------------
-        # ROI section
-        # -------------------------
+    def _build_roi_box(self) -> QWidget:
         roi_box = QWidget()
         roi_layout = QVBoxLayout()
         roi_layout.setContentsMargins(0, 0, 0, 0)
@@ -257,99 +246,33 @@ class CiliaAssistantWidget(QWidget):
 
         self.create_roi_button = QPushButton("Create / Edit ROI Rectangle")
         self._style_button(self.create_roi_button, "secondary")
-        self.create_roi_button.setToolTip(
-            "Create a rectangle over an active ciliated edge; ROI placement is the main user-controlled scientific decision."
-        )
+        self.create_roi_button.setToolTip("Create a rectangle over active cilia. ROI placement is the main scientific decision.")
         self.create_roi_button.clicked.connect(self.create_or_select_roi_layer)
         roi_layout.addWidget(self.create_roi_button)
 
         self.create_background_button = QPushButton("Create / Edit Background ROI")
         self._style_button(self.create_background_button, "secondary")
-        self.create_background_button.setToolTip(
-            "Optional negative-control rectangle in a nearby non-cilia region. "
-            "Use it to subtract shared illumination or focus drift from the cilia ROI signal."
-        )
+        self.create_background_button.setToolTip("Optional nearby non-cilia region for subtracting shared illumination or focus drift.")
         self.create_background_button.clicked.connect(self.create_or_select_background_roi_layer)
         roi_layout.addWidget(self.create_background_button)
 
-        self.subtract_background_check = QCheckBox("Subtract background ROI when measuring")
+        self.subtract_background_check = QCheckBox("Subtract background ROI for ROI frequency analysis")
         self.subtract_background_check.setChecked(True)
-        self.subtract_background_check.setToolTip(
-            "When a background ROI exists, subtract its mean-intensity trace from the selected cilia ROI before FFT."
-        )
         roi_layout.addWidget(self.subtract_background_check)
 
-        self.measure_roi_button = QPushButton("Analyze Selected ROI")
-        self._style_button(self.measure_roi_button, "primary")
-        self.measure_roi_button.setToolTip(
-            "Measure ROI mean-intensity oscillation, then estimate CBF using FFT and peak intervals."
-        )
-        self.measure_roi_button.clicked.connect(self.measure_selected_roi)
-        roi_layout.addWidget(self.measure_roi_button)
-
-        self.measure_whole_button = QPushButton("Analyze Whole-Frame Motion")
-        self._style_button(self.measure_whole_button, "secondary")
-        self.measure_whole_button.setToolTip(
-            "Exploratory only. Whole-frame signals may include illumination drift, stage motion, or tissue motion."
-        )
-        self.measure_whole_button.clicked.connect(self.measure_whole_frame)
-        roi_layout.addWidget(self.measure_whole_button)
-
         roi_box.setLayout(roi_layout)
-        content_layout.addWidget(CollapsiblePanel("Step 2. Region of Interest", roi_box, collapsed=False))
+        return roi_box
 
-        # -------------------------
-        # Analysis parameters
-        # -------------------------
-        analysis_box = QWidget()
-        analysis_layout = QVBoxLayout()
-        analysis_layout.setContentsMargins(0, 0, 0, 0)
-        analysis_layout.setSpacing(8)
+    def _build_analysis_tabs(self) -> QWidget:
+        tabs = QTabWidget()
+        tabs.setObjectName("analysisTabs")
+        tabs.addTab(RoiFrequencyTab(self), "ROI Frequency")
+        tabs.addTab(CbfHeatmapTab(self), "CBF Heatmap")
+        tabs.addTab(MotionActivityTab(self), "Motion Activity")
+        tabs.addTab(AdvancedFlowTab(self), "Advanced Flow")
+        return tabs
 
-        self.min_hz_box = QDoubleSpinBox()
-        self.min_hz_box.setRange(0.1, 500)
-        self.min_hz_box.setDecimals(2)
-        self.min_hz_box.setValue(3.0)
-        self.min_hz_box.setPrefix("Min Hz: ")
-        self.min_hz_box.setToolTip(
-            "Lower bound for the accepted biological rhythm; helps reject slow drift."
-        )
-        self.min_hz_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        analysis_layout.addWidget(self.min_hz_box)
-
-        self.max_hz_box = QDoubleSpinBox()
-        self.max_hz_box.setRange(0.1, 500)
-        self.max_hz_box.setDecimals(2)
-        self.max_hz_box.setValue(25.0)
-        self.max_hz_box.setPrefix("Max Hz: ")
-        self.max_hz_box.setToolTip(
-            "Upper bound for CBF search. The code also respects the Nyquist limit from FPS."
-        )
-        self.max_hz_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        analysis_layout.addWidget(self.max_hz_box)
-
-        self.kymo_button = QPushButton("Create Kymograph from Selected ROI")
-        self._style_button(self.kymo_button, "secondary")
-        self.kymo_button.setToolTip(
-            "Create a time-vs-position audit image to visually confirm rhythmic cilia motion."
-        )
-        self.kymo_button.clicked.connect(self.create_kymograph_layer)
-        analysis_layout.addWidget(self.kymo_button)
-
-        self.export_button = QPushButton("Export Last ROI Signal + FFT CSV")
-        self._style_button(self.export_button, "secondary")
-        self.export_button.setToolTip(
-            "Export raw time-intensity and FFT power data for methods documentation or re-analysis."
-        )
-        self.export_button.clicked.connect(self.export_last_measurement)
-        analysis_layout.addWidget(self.export_button)
-
-        analysis_box.setLayout(analysis_layout)
-        content_layout.addWidget(CollapsiblePanel("Step 3. Frequency Analysis", analysis_box, collapsed=False))
-
-        # -------------------------
-        # Plot section
-        # -------------------------
+    def _build_plot_box(self) -> QWidget:
         plot_box = QWidget()
         plot_layout = QVBoxLayout()
         plot_layout.setContentsMargins(0, 0, 0, 0)
@@ -362,80 +285,53 @@ class CiliaAssistantWidget(QWidget):
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         plot_layout.addWidget(self.canvas)
 
-        plot_button_row = QHBoxLayout()
-
+        row = QHBoxLayout()
         self.copy_graph_button = QPushButton("Copy Graphic")
         self._style_button(self.copy_graph_button, "secondary")
-        self.copy_graph_button.setToolTip(
-            "Copy the current measurement graph to the system clipboard as an image."
-        )
         self.copy_graph_button.clicked.connect(self.copy_measurement_graph)
-        plot_button_row.addWidget(self.copy_graph_button)
+        row.addWidget(self.copy_graph_button)
 
         self.save_graph_button = QPushButton("Save Graphic as TIFF")
         self._style_button(self.save_graph_button, "secondary")
-        self.save_graph_button.setToolTip(
-            "Save the current measurement graph as a TIFF image."
-        )
         self.save_graph_button.clicked.connect(self.save_measurement_graph_as_tiff)
-        plot_button_row.addWidget(self.save_graph_button)
+        row.addWidget(self.save_graph_button)
+        plot_layout.addLayout(row)
 
-        plot_layout.addLayout(plot_button_row)
         plot_box.setLayout(plot_layout)
-        plot_panel = CollapsiblePanel("Step 4. Measurement Graph", plot_box, collapsed=False)
-        plot_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content_layout.addWidget(plot_panel, 1)
+        return plot_box
 
-        # -------------------------
-        # Log section
-        # -------------------------
+    def _build_export_log_box(self) -> QWidget:
         log_box = QWidget()
         log_layout = QVBoxLayout()
         log_layout.setContentsMargins(0, 0, 0, 0)
         log_layout.setSpacing(8)
 
-        log_button_row = QHBoxLayout()
+        row = QHBoxLayout()
+        self.export_button = QPushButton("Export Last Analysis")
+        self._style_button(self.export_button, "secondary")
+        self.export_button.clicked.connect(self.export_last_analysis)
+        row.addWidget(self.export_button)
 
         self.copy_log_button = QPushButton("Copy Log")
         self._style_button(self.copy_log_button, "secondary")
-        self.copy_log_button.setToolTip(
-            "Copy the log with the current video file name and path included."
-        )
         self.copy_log_button.clicked.connect(self.copy_log)
-        log_button_row.addWidget(self.copy_log_button)
+        row.addWidget(self.copy_log_button)
 
         self.clear_log_button = QPushButton("Clear Log")
         self._style_button(self.clear_log_button, "secondary")
-        self.clear_log_button.setToolTip(
-            "Clear previous messages before opening or measuring the next video."
-        )
         self.clear_log_button.clicked.connect(self.clear_log)
-        log_button_row.addWidget(self.clear_log_button)
-        log_layout.addLayout(log_button_row)
+        row.addWidget(self.clear_log_button)
+        log_layout.addLayout(row)
 
         self.output = QTextEdit()
         self.output.setObjectName("runLog")
         self.output.setReadOnly(True)
         self.output.setPlaceholderText("Measurement messages, metadata, and QC notes will appear here.")
-        self.output.setMinimumHeight(140)
-        self.output.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.output.setMinimumHeight(150)
         log_layout.addWidget(self.output)
 
         log_box.setLayout(log_layout)
-        log_panel = CollapsiblePanel("Step 6. Log", log_box, collapsed=True)
-        log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content_layout.addWidget(log_panel, 1)
-
-        scroll_content.setLayout(content_layout)
-        scroll_area.setWidget(scroll_content)
-        layout.addWidget(scroll_area, 1)
-
-        self.setLayout(layout)
-        self._apply_ux_theme()
-
-    def _style_button(self, button: QPushButton, variant: str):
-        button.setProperty("variant", variant)
-        button.setCursor(Qt.PointingHandCursor)
+        return log_box
 
     def _build_result_card(self, label: str, value: str, note: str) -> QFrame:
         card = QFrame()
@@ -443,20 +339,15 @@ class CiliaAssistantWidget(QWidget):
         layout = QVBoxLayout()
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(4)
-
         title = QLabel(label)
         title.setObjectName("resultLabel")
         layout.addWidget(title)
-
         value_label = QLabel(value)
         value_label.setObjectName("resultValue")
-        value_label.setProperty("role", label.lower().replace(" ", "_"))
         layout.addWidget(value_label)
-
         note_label = QLabel(note)
         note_label.setObjectName("resultNote")
         layout.addWidget(note_label)
-
         card.setLayout(layout)
         card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         return card
@@ -468,248 +359,9 @@ class CiliaAssistantWidget(QWidget):
         if note is not None and len(labels) >= 3:
             labels[2].setText(note)
 
-    def _apply_ux_theme(self):
-        self.setStyleSheet(
-            """
-            QWidget#ciliaAssistant {
-                background: #080f1c;
-                color: #e8eef7;
-                font-size: 13px;
-            }
-
-            QFrame#assistantHeader {
-                background: #101a2b;
-                border: 1px solid #24344f;
-                border-radius: 8px;
-            }
-
-            QLabel#appLogo {
-                background: #13294b;
-                color: #70e1ff;
-                border: 1px solid #2563eb;
-                border-radius: 8px;
-                min-width: 48px;
-                max-width: 48px;
-                min-height: 48px;
-                max-height: 48px;
-                font-size: 15px;
-                font-weight: 900;
-            }
-
-            QLabel#appTitle {
-                color: #f8fbff;
-                font-size: 22px;
-                font-weight: 850;
-                padding: 0px;
-            }
-
-            QLabel#appSubtitle {
-                color: #c3d0e2;
-                font-size: 13px;
-                padding: 0px;
-            }
-
-            QScrollArea#assistantScrollArea,
-            QWidget#assistantScrollContent {
-                background: transparent;
-            }
-
-            QFrame#collapsibleBody {
-                background: #101827;
-                border: 1px solid #263750;
-                border-left: 4px solid #38bdf8;
-                border-radius: 8px;
-            }
-
-            QToolButton#collapsibleToggle {
-                background: #0b1321;
-                color: #dcecff;
-                border: 1px solid #7aa7cf;
-                border-radius: 9px;
-                min-width: 22px;
-                max-width: 22px;
-                min-height: 22px;
-                max-height: 22px;
-                font-weight: 700;
-                padding: 0px;
-            }
-
-            QToolButton#collapsibleToggle:hover {
-                background: #13243a;
-                border-color: #a7d7ff;
-                color: #ffffff;
-            }
-
-            QLabel#collapsibleStepBadge {
-                background: #233a5c;
-                color: #eef7ff;
-                border: 1px solid #5f91bc;
-                border-radius: 9px;
-                padding: 3px 8px;
-                font-size: 12px;
-                font-weight: 800;
-            }
-
-            QLabel#collapsibleTitle {
-                color: #f4f8ff;
-                font-size: 13px;
-                font-weight: 800;
-                padding: 2px 2px;
-            }
-
-            QFrame#collapsibleHeaderLine {
-                color: #263750;
-            }
-
-            QPushButton {
-                min-height: 32px;
-                border-radius: 7px;
-                padding: 6px 12px;
-                font-weight: 750;
-            }
-
-            QPushButton[variant="primary"] {
-                background: #2f6df6;
-                border: 1px solid #4d8dff;
-                color: #ffffff;
-            }
-
-            QPushButton[variant="primary"]:hover {
-                background: #3b82f6;
-                border-color: #89b8ff;
-            }
-
-            QPushButton[variant="secondary"] {
-                background: #172236;
-                border: 1px solid #334967;
-                color: #e8eef7;
-            }
-
-            QPushButton[variant="secondary"]:hover {
-                background: #20324e;
-                border-color: #5b789d;
-            }
-
-            QPushButton:pressed {
-                padding-top: 7px;
-                padding-bottom: 5px;
-            }
-
-            QPushButton:disabled {
-                background: #1f2937;
-                border-color: #334155;
-                color: #6b7280;
-            }
-
-            QSpinBox,
-            QDoubleSpinBox,
-            QTextEdit {
-                background: #070d18;
-                border: 1px solid #263750;
-                border-radius: 7px;
-                color: #e8eef7;
-                selection-background-color: #2f6df6;
-                selection-color: #ffffff;
-            }
-
-            QCheckBox {
-                color: #cbd7e8;
-                spacing: 8px;
-                font-weight: 650;
-            }
-
-            QCheckBox::indicator {
-                width: 15px;
-                height: 15px;
-            }
-
-            QCheckBox::indicator:unchecked {
-                background: #070d18;
-                border: 1px solid #45637f;
-                border-radius: 3px;
-            }
-
-            QCheckBox::indicator:checked {
-                background: #2f6df6;
-                border: 1px solid #70e1ff;
-                border-radius: 3px;
-            }
-
-            QSpinBox,
-            QDoubleSpinBox {
-                min-height: 28px;
-                padding: 3px 8px;
-            }
-
-            QSpinBox:focus,
-            QDoubleSpinBox:focus,
-            QTextEdit:focus {
-                border-color: #70e1ff;
-            }
-
-            QTextEdit#runLog {
-                min-height: 120px;
-                padding: 8px;
-                font-family: monospace;
-                color: #dbeafe;
-            }
-
-            QFrame#resultCard {
-                background: #0b1321;
-                border: 1px solid #2b4464;
-                border-radius: 8px;
-            }
-
-            QLabel#resultLabel {
-                color: #b8c7da;
-                font-size: 12px;
-                font-weight: 750;
-            }
-
-            QLabel#resultValue {
-                color: #7cff8a;
-                font-size: 24px;
-                font-weight: 900;
-                padding: 2px 0px;
-            }
-
-            QLabel#resultNote {
-                color: #8fa2bb;
-                font-size: 11px;
-            }
-
-            QScrollBar:vertical {
-                background: #0b1321;
-                width: 12px;
-                margin: 2px;
-            }
-
-            QScrollBar::handle:vertical {
-                background: #45637f;
-                border-radius: 5px;
-                min-height: 28px;
-            }
-
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-            """
-        )
-
-    def _style_plot_axes(self, axes):
-        axes.set_facecolor("#070d18")
-        axes.tick_params(colors="#d3deec", labelsize=9)
-        axes.xaxis.label.set_color("#dbeafe")
-        axes.yaxis.label.set_color("#dbeafe")
-        axes.title.set_color("#f8fbff")
-        axes.xaxis.label.set_size(9)
-        axes.yaxis.label.set_size(9)
-        axes.title.set_size(11)
-        axes.title.set_weight("bold")
-        for spine in axes.spines.values():
-            spine.set_color("#40546f")
-        axes.grid(True, color="#263750", alpha=0.55, linewidth=0.7)
+    def _style_button(self, button: QPushButton, variant: str):
+        button.setProperty("variant", variant)
+        button.setCursor(Qt.PointingHandCursor)
 
     # -------------------------
     # Logging
@@ -717,32 +369,23 @@ class CiliaAssistantWidget(QWidget):
     def log(self, text: str):
         self.output.append(text)
 
-    def _log_export_text(self) -> str:
-        lines: list[str] = ["Cilia Assistant Log"]
+    def clear_log(self):
+        self.output.clear()
+        self.log("Log cleared.")
 
+    def _log_export_text(self) -> str:
+        lines = ["Cilia Assistant Log"]
         if self.video_path:
-            video_path = Path(self.video_path)
-            lines.extend(
-                [
-                    f"Current file name: {video_path.name}",
-                    f"Current file path: {video_path}",
-                ]
-            )
+            path = Path(self.video_path)
+            lines.extend([f"Current file name: {path.name}", f"Current file path: {path}"])
         else:
             lines.append("Current file name: not loaded")
-
         if self.info:
-            fps = self.info.get("fps", "unknown")
-            frame_count = self.info.get("frame_count", "unknown")
-            duration = self.info.get("duration_sec", "unknown")
-            lines.extend(
-                [
-                    f"Metadata FPS: {fps}",
-                    f"Metadata frames: {frame_count}",
-                    f"Metadata duration_sec: {duration}",
-                ]
-            )
-
+            lines.extend([
+                f"Metadata FPS: {self.info.get('fps', 'unknown')}",
+                f"Metadata frames: {self.info.get('frame_count', 'unknown')}",
+                f"Metadata duration_sec: {self.info.get('duration_sec', 'unknown')}",
+            ])
         log_text = self.output.toPlainText().strip()
         lines.extend(["", "Log:", log_text if log_text else "(empty)"])
         return "\n".join(lines)
@@ -751,45 +394,28 @@ class CiliaAssistantWidget(QWidget):
         QApplication.clipboard().setText(self._log_export_text())
         self.log("Copied log to clipboard with video file information.")
 
-    def clear_log(self):
-        self.output.clear()
-        self.log("Log cleared.")
-
     # -------------------------
-    # Video loading
+    # Video and ROI handling
     # -------------------------
     def open_avi(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open AVI video",
-            "",
-            "AVI files (*.avi);;All files (*)",
-        )
-
+        path, _ = QFileDialog.getOpenFileName(self, "Open AVI video", "", "AVI files (*.avi);;All files (*)")
         if not path:
             return
-
         self.video_path = path
-
         try:
             self.info = read_avi_info(path)
-
             fps = self.info.get("fps", 0)
             if fps and fps > 0:
                 self.fps_box.setValue(float(fps))
-
             max_frames = self.max_frames_box.value()
             max_frames = None if max_frames == 0 else max_frames
-
             self.stack = load_avi_as_stack(path, max_frames=max_frames)
-
-        except Exception as e:
+        except Exception as exc:
             self.log("\nFailed to open AVI:")
-            self.log(str(e))
+            self.log(str(exc))
             return
 
         layer_name = Path(path).stem
-
         self.viewer.add_image(
             self.stack,
             name=f"{layer_name}_avi_stack",
@@ -802,22 +428,10 @@ class CiliaAssistantWidget(QWidget):
         self.log(f"  File path: {path}")
         for key, value in self.info.items():
             self.log(f"  {key}: {value}")
-
-        stats = summarize_stack(self.stack)
         self.log("\nLoaded stack:")
-        for key, value in stats.items():
+        for key, value in summarize_stack(self.stack).items():
             self.log(f"  {key}: {value}")
-
-        self.log("\nNext step: click 'Create / Edit ROI Rectangle', place it over moving cilia, then measure ROI.")
-
-    # -------------------------
-    # ROI handling
-    # -------------------------
-    def _find_roi_layer(self):
-        return self._find_layer(self.roi_layer_name)
-
-    def _find_background_roi_layer(self):
-        return self._find_layer(self.background_roi_layer_name)
+        self.log("\nNext: create/edit ROI, then choose an analysis tab in Step 3.")
 
     def _find_layer(self, layer_name: str):
         for layer in self.viewer.layers:
@@ -827,22 +441,12 @@ class CiliaAssistantWidget(QWidget):
 
     def create_or_select_roi_layer(self):
         self._create_or_select_rectangle_layer(
-            layer_name=self.roi_layer_name,
-            log_name="ROI",
-            edge_color="yellow",
-            face_color=[1, 1, 0, 0.10],
-            y_bounds=(0.40, 0.60),
-            x_bounds=(0.40, 0.60),
+            self.roi_layer_name, "ROI", "yellow", [1, 1, 0, 0.10], (0.40, 0.60), (0.40, 0.60)
         )
 
     def create_or_select_background_roi_layer(self):
         self._create_or_select_rectangle_layer(
-            layer_name=self.background_roi_layer_name,
-            log_name="background ROI",
-            edge_color="cyan",
-            face_color=[0, 1, 1, 0.08],
-            y_bounds=(0.08, 0.22),
-            x_bounds=(0.40, 0.60),
+            self.background_roi_layer_name, "background ROI", "cyan", [0, 1, 1, 0.08], (0.08, 0.22), (0.40, 0.60)
         )
 
     def _create_or_select_rectangle_layer(
@@ -857,9 +461,7 @@ class CiliaAssistantWidget(QWidget):
         if self.stack is None:
             self.log("Load an AVI first.")
             return
-
         existing = self._find_layer(layer_name)
-
         if existing is not None:
             self.viewer.layers.selection.active = existing
             existing.mode = "select"
@@ -867,21 +469,9 @@ class CiliaAssistantWidget(QWidget):
             return
 
         _, y_size, x_size = self.stack.shape
-
-        y0 = int(y_size * y_bounds[0])
-        y1 = int(y_size * y_bounds[1])
-        x0 = int(x_size * x_bounds[0])
-        x1 = int(x_size * x_bounds[1])
-
-        rectangle = np.array(
-            [
-                [y0, x0],
-                [y0, x1],
-                [y1, x1],
-                [y1, x0],
-            ]
-        )
-
+        y0, y1 = int(y_size * y_bounds[0]), int(y_size * y_bounds[1])
+        x0, x1 = int(x_size * x_bounds[0]), int(x_size * x_bounds[1])
+        rectangle = np.array([[y0, x0], [y0, x1], [y1, x1], [y1, x0]])
         roi_layer = self.viewer.add_shapes(
             [rectangle],
             shape_type=["rectangle"],
@@ -890,396 +480,344 @@ class CiliaAssistantWidget(QWidget):
             face_color=face_color,
             edge_width=2,
         )
-
         roi_layer.mode = "select"
         self.viewer.layers.selection.active = roi_layer
+        self.log(f"Created {log_name} rectangle. Move/resize it before analysis.")
 
-        self.log(f"Created {log_name} rectangle. Move/resize it before measuring.")
-
-    def _get_selected_roi(self) -> tuple[int, int, int, int]:
-        return self._get_roi_from_layer(
-            layer_name=self.roi_layer_name,
-            missing_message="No ROI layer found. Click 'Create / Edit ROI Rectangle' first.",
-        )
-
-    def _get_background_roi(self) -> tuple[int, int, int, int]:
-        return self._get_roi_from_layer(
-            layer_name=self.background_roi_layer_name,
-            missing_message="No background ROI layer found.",
-        )
-
-    def _get_roi_from_layer(
-        self,
-        layer_name: str,
-        missing_message: str,
-    ) -> tuple[int, int, int, int]:
+    def _get_roi_from_layer(self, layer_name: str, missing_message: str) -> tuple[int, int, int, int]:
         if self.stack is None:
             raise ValueError("No AVI stack loaded.")
-
         roi_layer = self._find_layer(layer_name)
-
         if roi_layer is None:
             raise ValueError(missing_message)
-
         if len(roi_layer.data) == 0:
             raise ValueError(f"{layer_name} layer exists but contains no shape.")
-
         selected = list(roi_layer.selected_data)
+        shape_index = selected[0] if selected else len(roi_layer.data) - 1
+        return roi_from_shape_data(roi_layer.data[shape_index], image_shape=self.stack.shape[1:])
 
-        if selected:
-            shape_index = selected[0]
-        else:
-            # Use the most recent shape if nothing is selected. This makes the
-            # workflow forgiving when the user draws a rectangle and immediately
-            # clicks Measure without explicitly selecting it.
-            shape_index = len(roi_layer.data) - 1
+    def _get_selected_roi(self) -> tuple[int, int, int, int]:
+        return self._get_roi_from_layer(self.roi_layer_name, "No ROI layer found. Click 'Create / Edit ROI Rectangle' first.")
 
-        shape_data = roi_layer.data[shape_index]
+    def _get_background_roi(self) -> tuple[int, int, int, int]:
+        return self._get_roi_from_layer(self.background_roi_layer_name, "No background ROI layer found.")
 
-        roi = roi_from_shape_data(
-            shape_data=shape_data,
-            image_shape=self.stack.shape[1:],
-        )
+    def _roi_for_region_mode(self, region_mode: str) -> tuple[int, int, int, int] | None:
+        return None if region_mode.lower().startswith("whole") else self._get_selected_roi()
 
-        return roi
-
-    # -------------------------
-    # Measurement
-    # -------------------------
-    def measure_selected_roi(self):
-        try:
-            roi = self._get_selected_roi()
-            self._run_measurement(roi=roi, label="Selected ROI")
-        except Exception as e:
-            self.log("\nROI measurement failed:")
-            self.log(str(e))
-
-    def measure_whole_frame(self):
-        try:
-            self._run_measurement(roi=None, label="Whole frame")
-        except Exception as e:
-            self.log("\nWhole-frame measurement failed:")
-            self.log(str(e))
-
-    def _run_measurement(
-        self,
-        roi: tuple[int, int, int, int] | None,
-        label: str,
-    ):
-        if self.stack is None:
-            raise ValueError("No AVI stack loaded.")
-
-        fps = float(self.fps_box.value())
-        min_hz = float(self.min_hz_box.value())
-        max_hz = float(self.max_hz_box.value())
-
-        raw_signal = roi_mean_signal(self.stack, roi=roi)
-        background_roi = None
-        background_signal = None
-        signal = raw_signal
-
-        if roi is not None and self.subtract_background_check.isChecked():
-            background_layer = self._find_background_roi_layer()
-            if background_layer is not None and len(background_layer.data) > 0:
-                background_roi = self._get_background_roi()
-                background_signal = roi_mean_signal(self.stack, roi=background_roi)
-                signal = raw_signal - background_signal
-
-        # FFT is the primary automated estimate; peak intervals provide an
-        # independent check against obvious failure modes such as weak/noisy ROIs.
-        fft_result = estimate_cbf_fft(
-            signal=signal,
-            fps=fps,
-            min_hz=min_hz,
-            max_hz=max_hz,
-        )
-
-        peak_result = estimate_cbf_peaks(
-            signal=signal,
-            fps=fps,
-            min_hz=min_hz,
-            max_hz=max_hz,
-        )
-
-        self.last_roi = roi
-        self.last_background_roi = background_roi
-        self.last_signal = signal
-        self.last_raw_signal = raw_signal
-        self.last_background_signal = background_signal
-        self.last_fft_result = fft_result
-        self.last_peak_result = peak_result
-
-        self.log("\nCBF measurement:")
-        if self.video_path:
-            self.log(f"  File name: {Path(self.video_path).name}")
-            self.log(f"  File path: {self.video_path}")
-        else:
-            self.log("  File name: not loaded")
-        self.log(f"  Region: {label}")
-
+    def _map_layer_placement(self, roi: tuple[int, int, int, int] | None, tile_size: int = 1):
         if roi is None:
-            self.log("  ROI: whole frame")
-            self.log("  Warning: whole-frame analysis may detect illumination/tissue motion, not true cilia.")
-            self.log("  For publication-style CBF, prefer a small ROI over visibly beating cilia.")
-        else:
-            x, y, w, h = roi
-            self.log(f"  ROI: x={x}, y={y}, width={w}, height={h}")
+            return (0, 0), (tile_size, tile_size)
+        x, y, _w, _h = roi
+        return (y, x), (tile_size, tile_size)
+
+    # -------------------------
+    # Analysis actions called by tabs
+    # -------------------------
+    def run_roi_frequency(self, method: str, min_hz: float, max_hz: float, whole_frame: bool = False):
+        try:
+            if self.stack is None:
+                raise ValueError("No AVI stack loaded.")
+            roi = None if whole_frame else self._get_selected_roi()
+            fps = float(self.fps_box.value())
+            raw_signal = roi_mean_signal(self.stack, roi=roi)
+            signal = raw_signal
+            background_roi = None
+            background_signal = None
+
+            if roi is not None and self.subtract_background_check.isChecked():
+                background_layer = self._find_layer(self.background_roi_layer_name)
+                if background_layer is not None and len(background_layer.data) > 0:
+                    background_roi = self._get_background_roi()
+                    background_signal = roi_mean_signal(self.stack, roi=background_roi)
+                    signal = raw_signal - background_signal
+
+            frequency_result = estimate_cbf_frequency(signal, fps=fps, min_hz=min_hz, max_hz=max_hz, method=method)
+            peak_result = estimate_cbf_peaks(signal, fps=fps, min_hz=min_hz, max_hz=max_hz)
+
+            self.last_roi = roi
+            self.last_background_roi = background_roi
+            self.last_raw_signal = raw_signal
+            self.last_background_signal = background_signal
+            self.last_signal = signal
+            self.last_frequency_result = frequency_result
+            self.last_peak_result = peak_result
+            self.last_map_result = None
+
+            freq_value = frequency_result["cbf_hz"]
+            self._set_result_card_value(self.frequency_result_card, f"{freq_value:.3f} Hz", method)
+            if np.isfinite(peak_result.get("cbf_hz", np.nan)):
+                self._set_result_card_value(self.peak_result_card, f"{peak_result['cbf_hz']:.3f} Hz", f"{peak_result['n_peaks']} peaks")
+            else:
+                self._set_result_card_value(self.peak_result_card, "—", peak_result.get("note", "No peak result"))
+
+            self.log("\nROI frequency analysis:")
+            self.log(f"  Method: {frequency_result['method']}")
+            self.log(f"  FPS: {fps:.3f}")
+            self.log(f"  Search range: {min_hz:.2f}-{max_hz:.2f} Hz")
+            if roi is None:
+                self.log("  Region: whole frame (exploratory)")
+            else:
+                x, y, w, h = roi
+                self.log(f"  ROI: x={x}, y={y}, width={w}, height={h}")
             if background_roi is not None:
                 bx, by, bw, bh = background_roi
                 self.log(f"  Background ROI: x={bx}, y={by}, width={bw}, height={bh}")
-                self.log("  Signal used: ROI mean intensity minus background ROI mean intensity")
-            elif self.subtract_background_check.isChecked():
-                self.log("  Background correction: not used; no background ROI found.")
+            self.log(f"  Frequency CBF: {frequency_result['cbf_hz']:.3f} Hz")
+            self.log(f"  Peak/background strength: {frequency_result['peak_to_background']:.3f}")
+            if np.isfinite(peak_result.get("cbf_hz", np.nan)):
+                self.log(f"  Peak-interval CBF: {peak_result['cbf_hz']:.3f} Hz ({peak_result['n_peaks']} peaks)")
             else:
-                self.log("  Background correction: off")
+                self.log(f"  Peak-interval CBF: not available ({peak_result.get('note', 'unknown')})")
+            self._plot_frequency_result(signal, fps, frequency_result, peak_result)
+        except Exception as exc:
+            self.log("\nROI frequency analysis failed:")
+            self.log(str(exc))
 
-        self.log(f"  FPS used: {fps:.3f}")
-        self.log(f"  Search range: {min_hz:.2f}–{fft_result['effective_max_hz']:.2f} Hz")
-        self.log(f"  Nyquist limit: {fft_result['nyquist_hz']:.2f} Hz")
-
-        self.log(f"  FFT CBF: {fft_result['cbf_hz']:.3f} Hz")
-        self.log(f"  FFT peak/background: {fft_result['peak_to_background']:.2f}")
-        self._set_result_card_value(
-            self.fft_result_card,
-            f"{fft_result['cbf_hz']:.3f} Hz",
-            f"Peak/background {fft_result['peak_to_background']:.2f}"
-            + (" · BG corrected" if background_roi is not None else ""),
-        )
-
-        peak_cbf = peak_result.get("cbf_hz", np.nan)
-        if np.isfinite(peak_cbf):
-            self.log(f"  Peak-interval CBF: {peak_cbf:.3f} Hz")
-            self.log(f"  Detected peaks: {peak_result.get('n_peaks', 0)}")
-            self._set_result_card_value(
-                self.peak_result_card,
-                f"{peak_cbf:.3f} Hz",
-                f"{peak_result.get('n_peaks', 0)} detected peaks",
-            )
-        else:
-            self.log("  Peak-interval CBF: not reliable")
-            self.log(f"  Peak note: {peak_result.get('note', 'N/A')}")
-            self._set_result_card_value(
-                self.peak_result_card,
-                "Not reliable",
-                peak_result.get("note", "Check ROI/video"),
-            )
-
-        self._plot_signal_and_fft(signal, fft_result, peak_result, fps, label)
-
-    def _plot_signal_and_fft(
-        self,
-        signal: np.ndarray,
-        fft_result: dict,
-        peak_result: dict,
-        fps: float,
-        label: str,
-    ):
-        self.figure.clear()
-
-        time = np.arange(len(signal)) / fps
-
-        ax1 = self.figure.add_subplot(2, 1, 1)
-        self._style_plot_axes(ax1)
-        ax1.plot(time, signal, color="#60a5fa", linewidth=1.6)
-        signal_label = "background-corrected signal" if self.last_background_signal is not None else "mean intensity"
-        ax1.set_title(
-            f"{label}: {signal_label}",
-            loc="left",
-            pad=8,
-            color="#f8fbff",
-            fontweight="bold",
-        )
-        ax1.set_xlabel("Time (s)")
-        ax1.set_ylabel("Intensity")
-
-        peaks = peak_result.get("peaks", np.array([], dtype=int))
-        if peaks is not None and len(peaks) > 0:
-            valid_peaks = peaks[(peaks >= 0) & (peaks < len(signal))]
-            ax1.plot(
-                time[valid_peaks],
-                signal[valid_peaks],
-                "o",
-                color="#f59e0b",
-                markersize=3,
-            )
-
-        ax2 = self.figure.add_subplot(2, 1, 2)
-        self._style_plot_axes(ax2)
-        freqs = fft_result["freqs"]
-        power = fft_result["power"]
-        cbf_hz = fft_result["cbf_hz"]
-
-        ax2.plot(freqs, power, color="#22c55e", linewidth=1.6)
-        # Mark the selected spectral peak so the reviewer/user can judge whether
-        # the reported CBF corresponds to a clear dominant rhythm.
-        ax2.axvline(cbf_hz, linestyle="--", color="#f59e0b", linewidth=1.3)
-        ax2.text(
-            0.98,
-            0.90,
-            f"FFT CBF\n{cbf_hz:.3f} Hz",
-            transform=ax2.transAxes,
-            ha="right",
-            va="top",
-            color="#7cff8a",
-            fontsize=10,
-            fontweight="bold",
-            bbox={
-                "boxstyle": "round,pad=0.35",
-                "facecolor": "#0b1321",
-                "edgecolor": "#2b4464",
-                "alpha": 0.92,
-            },
-        )
-        ax2.set_xlim(0, min(fft_result["effective_max_hz"] * 1.2, fps / 2.0))
-        ax2.set_title(
-            "FFT power spectrum",
-            loc="left",
-            pad=8,
-            color="#f8fbff",
-            fontweight="bold",
-        )
-        ax2.set_xlabel("Frequency (Hz)")
-        ax2.set_ylabel("Power")
-
-        self.figure.subplots_adjust(
-            left=0.14,
-            right=0.98,
-            top=0.94,
-            bottom=0.11,
-            hspace=0.58,
-        )
-        self.canvas.draw()
-
-    # -------------------------
-    # Measurement graphic helpers
-    # -------------------------
-    def _has_measurement_graph(self) -> bool:
-        return self.last_signal is not None and len(self.figure.axes) > 0
-
-    def copy_measurement_graph(self):
-        if not self._has_measurement_graph():
-            self.log("No measurement graph available to copy yet.")
-            return
-
-        try:
-            pixmap = self.canvas.grab()
-            if pixmap.isNull():
-                raise RuntimeError("Could not capture the graph canvas.")
-            QApplication.clipboard().setPixmap(pixmap)
-            self.log("Copied measurement graphic to clipboard.")
-        except Exception as e:
-            self.log("Failed to copy measurement graphic:")
-            self.log(str(e))
-
-    def save_measurement_graph_as_tiff(self):
-        if not self._has_measurement_graph():
-            self.log("No measurement graph available to save yet.")
-            return
-
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Measurement Graphic as TIFF",
-            "cilia_measurement_graph.tiff",
-            "TIFF files (*.tif *.tiff);;All files (*)",
-        )
-        if not path:
-            return
-
-        try:
-            self.figure.savefig(path, format="tiff", dpi=300, bbox_inches="tight")
-            self.log(f"Saved measurement graphic: {path}")
-        except Exception as e:
-            self.log("Failed to save measurement graphic:")
-            self.log(str(e))
-
-    # -------------------------
-    # Kymograph
-    # -------------------------
     def create_kymograph_layer(self):
-        if self.stack is None:
-            self.log("No AVI stack loaded.")
-            return
-
         try:
+            if self.stack is None:
+                raise ValueError("No AVI stack loaded.")
             roi = self._get_selected_roi()
             kymo = make_kymograph(self.stack, roi=roi)
-        except Exception as e:
-            self.log("\nCould not create selected-ROI kymograph:")
-            self.log(str(e))
-            self.log("Creating whole-frame center-line kymograph instead.")
-            kymo = make_kymograph(self.stack, roi=None)
+            self.viewer.add_image(kymo, name="Cilia kymograph", colormap="gray")
+            self.log("\nCreated kymograph layer from selected ROI.")
+        except Exception as exc:
+            self.log("\nKymograph creation failed:")
+            self.log(str(exc))
 
-        self.viewer.add_image(
-            kymo,
-            name="cilia_kymograph_time_vs_position",
-            colormap="gray",
-            contrast_limits=[float(kymo.min()), float(kymo.max())],
-        )
+    def run_cbf_heatmap(self, region_mode: str, method: str, tile_size: int, min_hz: float, max_hz: float):
+        try:
+            if self.stack is None:
+                raise ValueError("No AVI stack loaded.")
+            roi = self._roi_for_region_mode(region_mode)
+            fps = float(self.fps_box.value())
+            result = compute_cbf_heatmap(
+                self.stack, fps=fps, min_hz=min_hz, max_hz=max_hz, method=method, tile_size=tile_size, roi=roi
+            )
+            translate, scale = self._map_layer_placement(roi, result["tile_size"])
+            self.viewer.add_image(
+                result["cbf_map"],
+                name=f"CBF heatmap {method} (Hz)",
+                colormap="turbo",
+                translate=translate,
+                scale=scale,
+            )
+            self.viewer.add_image(
+                result["strength_map"],
+                name="CBF peak strength map",
+                colormap="magma",
+                translate=translate,
+                scale=scale,
+            )
+            self.last_map_result = result
+            self.log("\nCBF heatmap analysis:")
+            self.log(f"  Region: {region_mode}")
+            self.log(f"  Method: {method}")
+            self.log(f"  Tile size: {tile_size}")
+            finite = np.isfinite(result["cbf_map"])
+            if np.any(finite):
+                self.log(f"  CBF map median: {float(np.nanmedian(result['cbf_map'])):.3f} Hz")
+                self.log(f"  CBF map range: {float(np.nanmin(result['cbf_map'])):.3f}-{float(np.nanmax(result['cbf_map'])):.3f} Hz")
+            else:
+                self.log("  Warning: no valid CBF pixels were produced.")
+            self._plot_map_result(result["cbf_map"], title=f"CBF Heatmap ({method})", colorbar_label="Hz")
+        except Exception as exc:
+            self.log("\nCBF heatmap analysis failed:")
+            self.log(str(exc))
 
-        self.log("\nCreated kymograph layer.")
-        if self.video_path:
-            self.log(f"  File name: {Path(self.video_path).name}")
-            self.log(f"  File path: {self.video_path}")
-        self.log("  Kymograph shape: T x X-position")
-        self.log("  Each row is one video frame.")
-        self.log("  Repeated bands/waves indicate rhythmic cilia motion.")
-        self.log("  Use this as a visual audit; CBF alone does not prove normal waveform.")
+    def run_motion_activity(self, region_mode: str, method: str, tile_size: int, min_hz: float, max_hz: float):
+        try:
+            if self.stack is None:
+                raise ValueError("No AVI stack loaded.")
+            roi = self._roi_for_region_mode(region_mode)
+            fps = float(self.fps_box.value())
+            result = compute_motion_activity_map(
+                self.stack,
+                method=method,
+                fps=fps,
+                min_hz=min_hz,
+                max_hz=max_hz,
+                tile_size=tile_size,
+                roi=roi,
+            )
+            translate, scale = self._map_layer_placement(roi, result["tile_size"])
+            self.viewer.add_image(
+                result["activity_map"],
+                name=f"Motion activity - {result['method']}",
+                colormap="viridis",
+                translate=translate,
+                scale=scale,
+            )
+            self.last_map_result = result
+            self.log("\nMotion activity analysis:")
+            self.log(f"  Region: {region_mode}")
+            self.log(f"  Method: {result['method']}")
+            self.log(f"  Tile size: {tile_size}")
+            self._plot_map_result(result["activity_map"], title=result["method"], colorbar_label="activity")
+        except Exception as exc:
+            self.log("\nMotion activity analysis failed:")
+            self.log(str(exc))
+
+    def run_advanced_flow(self, region_mode: str, frame_step: int, max_pairs: int):
+        try:
+            if self.stack is None:
+                raise ValueError("No AVI stack loaded.")
+            roi = self._roi_for_region_mode(region_mode)
+            result = compute_optical_flow_maps(self.stack, roi=roi, frame_step=frame_step, max_pairs=max_pairs)
+            translate, scale = self._map_layer_placement(roi, 1)
+            for key, cmap in [
+                ("magnitude", "viridis"),
+                ("direction", "twilight"),
+                ("curl", "coolwarm"),
+                ("deformation", "magma"),
+            ]:
+                self.viewer.add_image(
+                    result[key],
+                    name=f"Optical flow {key}",
+                    colormap=cmap,
+                    translate=translate,
+                    scale=scale,
+                )
+            self.last_map_result = result
+            self.log("\nAdvanced optical-flow analysis:")
+            self.log(f"  Region: {region_mode}")
+            self.log(f"  Frame step: {frame_step}")
+            self.log(f"  Frame pairs used: {result['n_pairs']}")
+            self.log("  Interpretation: exploratory motion-field descriptors, not diagnostic beat-pattern classes.")
+            self._plot_map_result(result["magnitude"], title="Optical Flow Magnitude", colorbar_label="pixels/frame")
+        except Exception as exc:
+            self.log("\nAdvanced optical-flow analysis failed:")
+            self.log(str(exc))
 
     # -------------------------
-    # Export
+    # Plotting and export
     # -------------------------
-    def export_last_measurement(self):
-        if self.last_signal is None or self.last_fft_result is None:
-            self.log("No measurement to export yet.")
-            return
+    def _style_plot_axes(self, axes):
+        axes.set_facecolor("#070d18")
+        axes.tick_params(colors="#d3deec", labelsize=9)
+        axes.xaxis.label.set_color("#dbeafe")
+        axes.yaxis.label.set_color("#dbeafe")
+        axes.title.set_color("#f8fbff")
+        axes.title.set_size(11)
+        axes.title.set_weight("bold")
+        for spine in axes.spines.values():
+            spine.set_color("#40546f")
+        axes.grid(True, color="#263750", alpha=0.55, linewidth=0.7)
 
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Cilia Measurement CSV",
-            "cilia_roi_measurement.csv",
-            "CSV files (*.csv);;All files (*)",
-        )
+    def _plot_frequency_result(self, signal: np.ndarray, fps: float, frequency_result: dict, peak_result: dict):
+        self.figure.clear()
+        ax1 = self.figure.add_subplot(211)
+        ax2 = self.figure.add_subplot(212)
+        time = np.arange(signal.size) / fps
+        ax1.plot(time, signal, linewidth=1.2)
+        peaks = peak_result.get("peaks")
+        if peaks is not None and len(peaks) > 0:
+            ax1.plot(time[peaks], signal[peaks], "o", markersize=3)
+        ax1.set_title("ROI intensity signal")
+        ax1.set_xlabel("Time (s)")
+        ax1.set_ylabel("Intensity")
+        self._style_plot_axes(ax1)
+
+        freqs = frequency_result["freqs"]
+        power = frequency_result["power"]
+        ax2.plot(freqs, power, linewidth=1.2)
+        ax2.axvline(frequency_result["cbf_hz"], linestyle="--", linewidth=1.2)
+        ax2.set_xlim(0, max(1, min(frequency_result["effective_max_hz"] * 1.4, frequency_result["nyquist_hz"])))
+        ax2.set_title(f"Spectrum; CBF = {frequency_result['cbf_hz']:.3f} Hz")
+        ax2.set_xlabel("Frequency (Hz)")
+        ax2.set_ylabel("Power")
+        self._style_plot_axes(ax2)
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
+
+    def _plot_map_result(self, data: np.ndarray, title: str, colorbar_label: str):
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        im = ax.imshow(data, aspect="equal")
+        ax.set_title(title)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        self._style_plot_axes(ax)
+        cbar = self.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label(colorbar_label)
+        cbar.ax.yaxis.label.set_color("#dbeafe")
+        cbar.ax.tick_params(colors="#d3deec")
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
+
+    def copy_measurement_graph(self):
+        self.canvas.draw()
+        width, height = self.canvas.get_width_height()
+        buf = self.canvas.buffer_rgba()
+        from qtpy.QtGui import QImage, QPixmap
+
+        image = QImage(buf, width, height, QImage.Format_RGBA8888).copy()
+        QApplication.clipboard().setPixmap(QPixmap.fromImage(image))
+        self.log("Copied current graph to clipboard.")
+
+    def save_measurement_graph_as_tiff(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save graph as TIFF", "cilia_analysis_graph.tif", "TIFF files (*.tif *.tiff)")
         if not path:
             return
+        self.figure.savefig(path, dpi=300, facecolor=self.figure.get_facecolor())
+        self.log(f"Saved graph: {path}")
 
-        fps = float(self.fps_box.value())
-        time = np.arange(len(self.last_signal)) / fps
+    def export_last_analysis(self):
+        directory = QFileDialog.getExistingDirectory(self, "Choose export folder")
+        if not directory:
+            return
+        out_dir = Path(directory)
+        try:
+            if self.last_signal is not None:
+                fps = float(self.fps_box.value())
+                time = np.arange(self.last_signal.size) / fps
+                table = np.column_stack([time, self.last_signal])
+                np.savetxt(out_dir / "roi_signal.csv", table, delimiter=",", header="time_sec,signal", comments="")
+            if self.last_frequency_result is not None:
+                spec = np.column_stack([self.last_frequency_result["freqs"], self.last_frequency_result["power"]])
+                np.savetxt(out_dir / "frequency_spectrum.csv", spec, delimiter=",", header="frequency_hz,power", comments="")
+            if self.last_map_result is not None:
+                for key, value in self.last_map_result.items():
+                    if isinstance(value, np.ndarray):
+                        np.save(out_dir / f"{key}.npy", value)
+            (out_dir / "cilia_assistant_log.txt").write_text(self._log_export_text(), encoding="utf-8")
+            self.log(f"Exported last analysis to: {out_dir}")
+        except Exception as exc:
+            self.log("Export failed:")
+            self.log(str(exc))
 
-        signal_path = Path(path)
-        fft_path = signal_path.with_name(signal_path.stem + "_fft.csv")
-
-        header = "time_sec,roi_signal_used"
-        columns = [time, self.last_signal]
-        if self.last_raw_signal is not None and self.last_background_signal is not None:
-            columns = [time, self.last_raw_signal, self.last_background_signal, self.last_signal]
-            header = (
-                "time_sec,roi_mean_intensity,background_mean_intensity,"
-                "background_corrected_intensity"
-            )
-
-        signal_table = np.column_stack(columns)
-        np.savetxt(
-            signal_path,
-            signal_table,
-            delimiter=",",
-            header=header,
-            comments="",
+    # -------------------------
+    # Theme
+    # -------------------------
+    def _apply_ux_theme(self):
+        self.setStyleSheet(
+            """
+            QWidget#ciliaAssistant { background: #080f1c; color: #e8eef7; font-size: 13px; }
+            QFrame#assistantHeader { background: #101a2b; border: 1px solid #24344f; border-radius: 8px; }
+            QLabel#appLogo { background: #13294b; color: #70e1ff; border: 1px solid #2563eb; border-radius: 8px; min-width: 48px; max-width: 48px; min-height: 48px; max-height: 48px; font-size: 15px; font-weight: 900; }
+            QLabel#appTitle { color: #f8fbff; font-size: 22px; font-weight: 850; }
+            QLabel#appSubtitle { color: #c3d0e2; font-size: 13px; }
+            QScrollArea#assistantScrollArea, QWidget#assistantScrollContent { background: transparent; }
+            QFrame#collapsibleBody { background: #101827; border: 1px solid #263750; border-left: 4px solid #38bdf8; border-radius: 8px; }
+            QToolButton#collapsibleToggle { background: #0b1321; color: #dcecff; border: 1px solid #7aa7cf; border-radius: 9px; min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px; font-weight: 700; padding: 0px; }
+            QLabel#collapsibleStepBadge { background: #233a5c; color: #eef7ff; border: 1px solid #5f91bc; border-radius: 9px; padding: 3px 8px; font-size: 12px; font-weight: 800; }
+            QLabel#collapsibleTitle { color: #f4f8ff; font-size: 13px; font-weight: 800; padding: 2px 2px; }
+            QFrame#collapsibleHeaderLine { color: #263750; }
+            QTabWidget::pane { border: 1px solid #263750; border-radius: 6px; background: #0b1321; }
+            QTabBar::tab { background: #172236; color: #dbeafe; padding: 7px 8px; border: 1px solid #334967; border-bottom: none; }
+            QTabBar::tab:selected { background: #2f6df6; color: white; }
+            QPushButton { min-height: 32px; border-radius: 7px; padding: 6px 12px; font-weight: 750; }
+            QPushButton[variant="primary"] { background: #2f6df6; border: 1px solid #4d8dff; color: #ffffff; }
+            QPushButton[variant="primary"]:hover { background: #3b82f6; border-color: #89b8ff; }
+            QPushButton[variant="secondary"] { background: #172236; border: 1px solid #334967; color: #e8eef7; }
+            QPushButton[variant="secondary"]:hover { background: #20324e; border-color: #5b789d; }
+            QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit { background: #070d18; border: 1px solid #263750; border-radius: 7px; color: #e8eef7; selection-background-color: #2f6df6; selection-color: #ffffff; min-height: 28px; padding: 3px 8px; }
+            QCheckBox { color: #cbd7e8; spacing: 8px; font-weight: 650; }
+            QTextEdit#runLog { min-height: 120px; padding: 8px; font-family: monospace; color: #dbeafe; }
+            QFrame#resultCard { background: #0b1321; border: 1px solid #2b4464; border-radius: 8px; }
+            QLabel#resultLabel { color: #b8c7da; font-size: 12px; font-weight: 750; }
+            QLabel#resultValue { color: #7cff8a; font-size: 24px; font-weight: 900; padding: 2px 0px; }
+            QLabel#resultNote { color: #8fa2bb; font-size: 11px; }
+            """
         )
-
-        freqs = self.last_fft_result["freqs"]
-        power = self.last_fft_result["power"]
-        fft_table = np.column_stack([freqs, power])
-        np.savetxt(
-            fft_path,
-            fft_table,
-            delimiter=",",
-            header="frequency_hz,fft_power",
-            comments="",
-        )
-
-        self.log("\nExported measurement:")
-        if self.video_path:
-            self.log(f"  File name: {Path(self.video_path).name}")
-            self.log(f"  File path: {self.video_path}")
-        self.log(f"  Signal CSV: {signal_path}")
-        self.log(f"  FFT CSV: {fft_path}")
