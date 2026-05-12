@@ -4,7 +4,11 @@
 
 The plugin supports ROI-based ciliary beat frequency (CBF) measurement, kymograph review, spatial CBF heatmaps, motion activity maps, and experimental optical-flow descriptors.
 
-[Watch the demo video](docs/ui.mp4)
+## Demo
+
+![Cilia Assistant user interface](docs/ui.png)
+
+[Watch the UI demo video](docs/ui.mp4)
 
 ## Install
 
