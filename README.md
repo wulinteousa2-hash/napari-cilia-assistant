@@ -8,7 +8,7 @@ The plugin supports ROI-based ciliary beat frequency (CBF) measurement, kymograp
 
 ![Cilia Assistant user interface](docs/ui.png)
 
-[Watch the UI demo video](docs/ui.mp4)
+[Watch or download the UI demo video](https://raw.githubusercontent.com/wulinteousa2-hash/napari-cilia-assistant/main/docs/ui.mp4)
 
 ## Install
 
