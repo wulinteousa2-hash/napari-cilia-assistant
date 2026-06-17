@@ -1,5 +1,7 @@
 # napari-cilia-assistant
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20734124.svg)](https://doi.org/10.5281/zenodo.20734124)
+
 `napari-cilia-assistant` is a napari plugin for exploratory ciliary motion analysis from high-speed AVI microscopy videos.
 
 The plugin supports ROI-based ciliary beat frequency (CBF) measurement, kymograph review, spatial CBF heatmaps, motion activity maps, and experimental optical-flow descriptors.

@@ -2,8 +2,9 @@ cff-version: 1.2.0
 message: "If you use napari-cilia-assistant in your work, please cite it using this metadata."
 type: software
 title: "napari-cilia-assistant"
-version: "1.0.1"
+version: "1.1.0"
 date-released: "2026-05-09"
+doi: "10.5281/zenodo.20734124"
 
 authors:
   - family-names: "Teo"
